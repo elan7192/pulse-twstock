@@ -14,6 +14,9 @@ const lastAt = new Map(), blocked = new Set(), count = new Map();
 const log = [];
 const note = (...a) => { const s = a.join(' '); log.push(s); console.log(s); };
 
+const COMPACT = {
+  tpex_day: ['Date', 'SecuritiesCompanyCode', 'CompanyName', 'Close', 'Change', 'Open', 'High', 'Low', 'TradingShares'],
+};
 function save(path, obj) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(obj)); }
 function load(path) { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } }
 
@@ -45,15 +48,22 @@ function headersFor(src, p) {
 async function fetchSource(key, p = {}, file) {
   const src = SOURCES[key];
   const r = await request(src.host, src.url(p), { method: src.method, body: src.body?.(p), headers: headersFor(src, p) });
+  // 櫃買尚未產出的靜態檔會回 302 轉址：近 5 日視為暫缺（下次再試），更早視為休市
+  if (r.status >= 300 && r.status < 400 && src.immutable) {
+    if ((p.date ?? '') >= weekdaysBack(5)[4]) { note(`… ${key} ${p.date ?? ''}：來源尚未產出（${r.status}），下次再試`); return r.status; }
+    r.status = 404;
+  }
   if (r.status === 404 && src.immutable) { save(file, { key, label: src.label, status: 404, fetchedAt: Date.now(), payload: '', encoding: 'text', stale: false, retryAfter: 0, message: '來源無此檔（休市或尚未產出）' }); return 404; }
   if (r.status !== 200 || !r.buf?.length) { note(`✗ ${key}${p.date ? ' ' + p.date : ''}：${r.status === -1 ? '主機已封鎖本次略過' : r.status === -2 ? '超過本次上限' : r.status || r.error}`); return r.status; }
-  if (r.buf.length > src.maxBytes * 1.5) { note(`✗ ${key}：回應過大 ${r.buf.length}`); return 0; }
+  if (r.buf.length > Math.max(src.maxBytes * 1.5, COMPACT[key] ? 12_000_000 : 0)) { note(`✗ ${key}：回應過大 ${r.buf.length}`); return 0; }
   let payload, encoding;
   if (src.binary) { payload = r.buf.toString('base64'); encoding = 'base64'; }
   else {
     payload = r.buf.toString('utf8').replace(/^﻿/, '');
     if (/^\s*</.test(payload)) { note(`✗ ${key}：收到 HTML（可能被導向或錯誤頁）`); return 0; }
-    try { JSON.parse(payload); } catch { note(`✗ ${key}：不是 JSON`); return 0; }
+    let parsed; try { parsed = JSON.parse(payload); } catch { note(`✗ ${key}：不是 JSON`); return 0; }
+    // 大檔只保留網站用到的欄位（上櫃日成交原檔約 4.5 MB）
+    if (COMPACT[key] && Array.isArray(parsed)) payload = JSON.stringify(parsed.map(o => Object.fromEntries(COMPACT[key].filter(f => f in o).map(f => [f, o[f]]))));
     encoding = 'text';
   }
   save(file, { key, label: src.label, status: 200, fetchedAt: Date.now(), payload, encoding, stale: false, retryAfter: 0, message: '已更新' });

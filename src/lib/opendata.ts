@@ -60,8 +60,11 @@ export function parseTpexDisposal(json: unknown): Disposition[] {
     const [start, end] = period(pick(r, ['DispositionPeriod', 'Period'], ['期間', 'Period']));
     const detail = pick(r, ['DisposalCondition', 'DispositionMeasures', 'Measures', 'Detail'], ['措施', '內容', 'Condition']);
     return { market: '上櫃' as Market, code: pick(r, ['SecuritiesCompanyCode', 'Code'], ['代號', 'Code']), name: pick(r, ['CompanyName', 'Name'], ['名稱', 'Name']),
-      announced: toDate(pick(r, ['Date', 'AnnouncementDate'], ['日期'])), start, end, level: /第二次|再次/.test(detail) ? '第二次處置' : /第一次/.test(detail) ? '第一次處置' : '處置',
-      reason: pick(r, ['DispositionReasons', 'Reason'], ['原因', 'Reason']), matchMinutes: matchMinutes(detail), fullPrepay: /所有投資人/.test(detail), detail };
+      announced: toDate(pick(r, ['Date', 'AnnouncementDate'], ['日期'])), start, end,
+      // 櫃買公告：「最近30個營業日內曾發布處置」＝第二次以上；無「單筆達10交易單位」門檻＝全部委託預收
+      level: /第二次|再次|最近\s*30\s*個營業日內曾發布處置|曾發布處置交易資訊/.test(detail) ? '第二次處置' : '第一次處置',
+      reason: pick(r, ['DispositionReasons', 'Reason'], ['原因', 'Reason']), matchMinutes: matchMinutes(detail),
+      fullPrepay: /所有投資人/.test(detail) || (/收取全部之買進價金/.test(detail) && !/單筆達/.test(detail)), detail };
   }).filter(d => d.code);
 }
 export type Notice = { market: Market; code: string; name: string; count: number | null; info: string; close: number | null; date: string | null };
