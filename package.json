@@ -5,7 +5,7 @@
   "type": "module",
   "description": "PULSE 脈動：台股分點籌碼與策略工具（GitHub Pages 靜態版）",
   "scripts": {
-    "fetch": "node --experimental-strip-types scripts/fetch-data.mjs",
+    "fetch": "node --experimental-strip-types --no-warnings --import ./tests/ts-resolve.mjs scripts/fetch-data.mjs",
     "build": "node scripts/build.mjs",
     "test": "for f in tests/check-*.mjs; do node --experimental-strip-types --no-warnings --import ./tests/ts-resolve.mjs $f || exit 1; done"
   },

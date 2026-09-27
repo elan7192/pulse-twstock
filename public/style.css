@@ -86,3 +86,19 @@ footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;paddin
 .pv-note{margin-left:auto;font-size:12px;color:#8a99a8;padding:8px 0}
 @media(max-width:700px){.pv-note{margin-left:0}.topbar small{display:none}footer{padding:16px 12px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ---------- 交易計劃 ---------- */
+.pl-gauge-card{display:flex;flex-direction:column;align-items:center}
+.pl-gauge{width:180px;max-width:100%;height:auto}
+.pl-zone{display:flex;flex-direction:column;gap:2px;padding:7px 10px;border:1px solid #26313e;border-radius:5px;font-size:12px;color:#8b9aac}
+.pl-zone b{color:#c9d5e0;font-size:13px}.pl-zone small{color:#6f8193;font-weight:400}
+.pl-zone.on{border-color:#2d5964;background:#15303b}.pl-zone.on b{color:#8fdfed}
+.pl-check{cursor:pointer;align-items:flex-start}.pl-check input{position:absolute;opacity:0;width:1px;height:1px}.pl-check div{display:flex;flex-direction:column}
+.pl-check:has(input:focus-visible){outline:2px solid var(--primary);outline-offset:2px}
+.pl-grade{font-size:44px;font-weight:700;text-align:center;line-height:1.2;letter-spacing:2px}
+.pl-grade.gAp{color:#f1c57e}.pl-grade.gA{color:#7fe0c4}.pl-grade.gB{color:#8fc9f7}.pl-grade.gC{color:#f59aa3}
+.pl-finding{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-left:3px solid #6b7c8c;background:#141d27;border-radius:3px;font-size:12px;color:#b7c5d1}
+.pl-finding b{font-size:13px}.pl-finding small{color:#8b9aac}
+.pl-finding.bad{border-left-color:var(--up)}.pl-finding.bad b{color:#f59aa3}
+.pl-finding.warn{border-left-color:#e7b86c}.pl-finding.warn b{color:#eac080}
+.pl-finding.good{border-left-color:var(--down)}.pl-finding.good b{color:#7fe0c4}

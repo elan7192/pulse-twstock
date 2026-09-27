@@ -5,6 +5,8 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync
 import { dirname, join } from 'node:path';
 import { SOURCES, HOSTS, taipeiDate } from '../src/lib/open-sources.ts';
 import { parseMiIndex, num } from './mi-index.mjs';
+import { parseTxo, packChain, breadthSeries } from '../src/lib/plan.ts';
+import { parseFuturesReport } from '../src/lib/futures.ts';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 const DATA = join(ROOT, 'data');
@@ -77,9 +79,65 @@ function weekdaysBack(n, from = taipeiDate(Date.now())) {
   return out;
 }
 
+const decode = buf => { const t = buf.toString('utf8').replace(/^\uFEFF/, ''); return /^\s*[[{]/.test(t) || !t.includes('\uFFFD') ? t : new TextDecoder('big5').decode(buf); };
+
+/** 交易計劃（溫度計、五條線、樂透 OP）用的資料：台指選擇權、台指期日 K、加權指數歷史、上市市場寬度。 */
+async function planData(today) {
+  const dir = join(DATA, 'plan');
+  // a. 台指選擇權每日行情：原檔約 4 MB，只保留 TXO 一般時段必要欄位
+  const r = await request('openapi.taifex.com.tw', 'https://openapi.taifex.com.tw/v1/DailyMarketReportOpt', { headers: { Accept: 'application/json,text/csv,*/*' } });
+  if (r.status === 200 && r.buf?.length) {
+    try { const c = parseTxo(decode(r.buf)); if (c.rows.length) { save(join(dir, 'txo.json'), packChain(c)); note(`✓ 台指選擇權 ${c.date}（${c.rows.length} 筆）`); } else note('✗ 台指選擇權：沒有 TXO 資料'); }
+    catch (e) { note(`✗ 台指選擇權：${e}`); }
+  } else note(`✗ 台指選擇權：${r.status || r.error}`);
+
+  // b. 台指期近月日 K：由期貨每日行情逐日累積（一般時段；夜盤另存收盤）
+  const fut = load(join(DATA, 'open', 'taifex_fut_daily.json'));
+  if (fut?.payload) {
+    try {
+      const q = parseFuturesReport(fut.encoding === 'base64' ? decode(Buffer.from(fut.payload, 'base64')) : fut.payload).filter(x => x.contract === 'TX' && /^\d{6}$/.test(x.month));
+      const day = q.filter(x => /一般|Regular/i.test(x.session)).sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))[0];
+      if (day?.date && day.high != null && day.low != null && (day.last ?? day.settle) != null) {
+        const night = q.find(x => x.month === day.month && !/一般|Regular/i.test(x.session));
+        const file = join(dir, 'tx.json'); const hist = (load(file) ?? []).filter(x => x[0] !== day.date);
+        hist.push([day.date, day.month, day.open, day.high, day.low, day.last ?? day.settle, day.settle, day.volume, day.oi, night?.last ?? null]);
+        hist.sort((a, b) => a[0].localeCompare(b[0])); save(file, hist.slice(-400)); note(`✓ 台指期日 K ${day.date}（累積 ${hist.length} 日）`);
+      }
+    } catch (e) { note(`✗ 台指期日 K：${e}`); }
+  }
+
+  // c. 加權指數日 K（證交所 MI_5MINS_HIST，每月一次請求）：保留約 42 個月，已完整的月份不再抓
+  const file = join(dir, 'taiex.json'); const have = new Map((load(file) ?? []).map(x => [x[0], x]));
+  const cur = today.slice(0, 7); const months = [];
+  for (let d = new Date(cur + '-01T00:00:00Z'), k = 0; k < 42; k++, d.setUTCMonth(d.getUTCMonth() - 1)) months.push(d.toISOString().slice(0, 7));
+  const prev = months[1];
+  let got = 0;
+  for (const m of months) {
+    const needs = m === cur || (m === prev && +today.slice(8) <= 7) || ![...have.keys()].some(d => d.startsWith(m));
+    if (!needs) continue;
+    const res = await request('www.twse.com.tw', `https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date=${m.replace('-', '')}01&response=json`, { headers: { Accept: 'application/json' } });
+    if (res.status !== 200) { if (res.status === -1 || res.status === -2 || res.status === 403 || res.status === 429) break; continue; }
+    let j; try { j = JSON.parse(res.buf.toString('utf8')); } catch { continue; }
+    for (const row of j?.data ?? []) { const mm = String(row[0]).match(/^(\d{2,3})\/(\d{2})\/(\d{2})$/); if (!mm) continue; const d = `${+mm[1] + 1911}-${mm[2]}-${mm[3]}`; const v = row.slice(1, 5).map(num); if (v.every(x => x != null)) have.set(d, [d, ...v]); }
+    got++;
+  }
+  const keepFrom = months.at(-1);
+  const taiex = [...have.values()].filter(x => x[0] >= keepFrom).sort((a, b) => a[0].localeCompare(b[0]));
+  if (taiex.length) save(file, taiex);
+  note(`加權指數歷史：本次請求 ${got} 次，共 ${taiex.length} 日`);
+
+  // d. 上市市場寬度（站上 MA20／MA60、漲跌家數、20 日新高新低）：由逐日收盤行情計算
+  const hDir = join(DATA, 'twse-daily');
+  if (existsSync(hDir)) {
+    const days = readdirSync(hDir).sort().map(f => ({ date: f.replace('.json', ''), rows: load(join(hDir, f)) ?? [] }));
+    const b = breadthSeries(days); save(join(dir, 'breadth.json'), b); note(`市場寬度：${b.length} 日`);
+  }
+}
+
 async function main() {
   const today = taipeiDate(Date.now());
   note(`PULSE 資料更新 ${new Date().toISOString()}（台北 ${today}）`);
+  if (process.argv.includes('--only=plan')) { await planData(today); return; }
   // 1. 當日資料集
   const plain = ['twse_punish', 'twse_notice', 'twse_notetrans', 'twse_margin', 'twse_day', 'twse_meeting', 'taifex_ssf_margin', 'taifex_fut_daily', 'tpex_disposal', 'tpex_warning', 'tpex_margin', 'tpex_day', 'tpex_cb_put', 'tpex_cb_mode'];
   for (const k of plain) await fetchSource(k, {}, join(DATA, 'open', `${k}.json`));
@@ -125,6 +183,8 @@ async function main() {
       if (rows.length) save(join(DATA, 'tpex-daily', `${d}.json`), rows);
     } catch { note('✗ 上櫃日行情無法累積'); }
   }
+  // 5. 交易計劃資料
+  try { await planData(today); } catch (e) { note(`✗ 交易計劃資料：${e}`); }
   save(join(DATA, 'status.json'), { updatedAt: Date.now(), taipei: today, log, blocked: [...blocked], requests: Object.fromEntries(count) });
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
