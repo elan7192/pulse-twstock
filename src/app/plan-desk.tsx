@@ -11,20 +11,20 @@ import {
 } from '@/lib/plan';
 
 type View='thermo'|'lines'|'lotto'|'doctor';
-type TxBar=OHLC&{month:string;settle:number|null;volume:number|null;oi:number|null;night:number|null};
-type PlanData={index:OHLC[];tx:TxBar[];chain:OptChain|null;breadth:BreadthRow[]};
+type TxBar=OHLC&{month:string;settle:number|null;volume:number|null;oi:number|null};
+type PlanData={index:OHLC[];tx:TxBar[];chain:OptChain|null;breadth:BreadthRow[];holidays:Set<string>};
 
 function demoData():PlanData{
-  const index=demoIndex();const tx=index.slice(-250).map((b,i)=>({...b,open:b.open+40,high:b.high+40,low:b.low+40,close:b.close+40,month:'202610',settle:b.close+40,volume:90000,oi:80000,night:i===249?b.close+95:null}));
-  return {index,tx,chain:demoChain(tx.at(-1)!.close,'2026-09-24'),breadth:demoBreadth(index)};
+  const index=demoIndex();const tx=index.slice(-250).map(b=>({...b,open:b.open+40,high:b.high+40,low:b.low+40,close:b.close+40,month:'202610',settle:b.close+40,volume:90000,oi:80000}));
+  return {index,tx,chain:demoChain(tx.at(-1)!.close,'2026-09-24'),breadth:demoBreadth(index),holidays:new Set()};
 }
 async function loadReal(signal:AbortSignal):Promise<{data:PlanData;missing:string[]}>{
   const get=async(f:string)=>{try{const r=await fetch(`${DATA_MODE.base}data/plan/${f}.json`,{cache:'no-cache',signal});return r.ok?await r.json():null;}catch{return null;}};
-  const [taiex,tx,txo,breadth]=await Promise.all(['taiex','tx','txo','breadth'].map(get)) as [[string,number,number,number,number][]|null,(string|number|null)[][]|null,{date:string|null;rows:OptCompact[]}|null,BreadthRow[]|null];
+  const [taiex,tx,txo,breadth,holidays]=await Promise.all(['taiex','tx','txo','breadth','holidays'].map(get)) as [[string,number,number,number,number][]|null,(string|number|null)[][]|null,{date:string|null;rows:OptCompact[]}|null,BreadthRow[]|null,string[]|null];
   const missing=[!taiex?.length&&'加權指數歷史',!tx?.length&&'台指期日 K',!txo?.rows?.length&&'台指選擇權',!breadth?.length&&'市場寬度'].filter((x):x is string=>!!x);
   return {missing,data:{index:(taiex??[]).map(([date,open,high,low,close])=>({date,open,high,low,close})),
-    tx:(tx??[]).map(r=>({date:r[0] as string,month:r[1] as string,open:(r[2]??r[5]) as number,high:r[3] as number,low:r[4] as number,close:r[5] as number,settle:r[6] as number|null,volume:r[7] as number|null,oi:r[8] as number|null,night:r[9] as number|null})),
-    chain:txo?.rows?.length?unpackChain(txo):null,breadth:breadth??[]}};
+    tx:(tx??[]).map(r=>({date:r[0] as string,month:r[1] as string,open:(r[2]??r[5]) as number,high:r[3] as number,low:r[4] as number,close:r[5] as number,settle:r[6] as number|null,volume:r[7] as number|null,oi:r[8] as number|null})),
+    chain:txo?.rows?.length?unpackChain(txo):null,breadth:breadth??[],holidays:new Set(holidays??[])}};
 }
 
 export default function PlanDesk(){
@@ -57,7 +57,6 @@ function LinesView({d,thermo}:{d:PlanData;thermo:number|null}){
   const last=bars.at(-1);
   const [hlc,setHlc]=useState<{h:number;l:number;c:number}|null>(null);
   const src=hlc??(last?{h:Math.round(last.high),l:Math.round(last.low),c:Math.round(last.close)}:null);
-  const night=base==='tx'?d.tx.at(-1)?.night??null:null;
   const [ref,setRef]=useState<number|null>(null);
   const refPx=ref??src?.c??0;
   const fl=src?fiveLines(src.h,src.l,src.c,method):null;
@@ -80,7 +79,7 @@ function LinesView({d,thermo}:{d:PlanData;thermo:number|null}){
         <div className="st-form">
           <div className="two-inputs"><Num label="最高" value={src.h} onChange={n=>setHlc({...src,h:n})}/><Num label="最低" value={src.l} onChange={n=>setHlc({...src,l:n})}/></div>
           <div className="two-inputs"><Num label="收盤" value={src.c} onChange={n=>setHlc({...src,c:n})}/><Num label="參考價（開盤／現價）" value={refPx} onChange={setRef}/></div>
-          <div className="bd-row">{night!=null&&<button className="text-button" onClick={()=>setRef(night)} title="期交所同日報表的盤後時段收盤">帶入夜盤 {num(night)}</button>}{ref!=null&&<button className="text-button" onClick={()=>setRef(null)}>參考價改回收盤</button>}{hlc&&<button className="text-button" onClick={()=>setHlc(null)}>高低收還原為資料</button>}</div>
+          <div className="bd-row">{ref!=null&&<button className="text-button" onClick={()=>setRef(null)}>參考價改回收盤</button>}{hlc&&<button className="text-button" onClick={()=>setHlc(null)}>高低收還原為資料</button>}</div>
           <div className={`st-verdict ${zone?.bias==='long'?'go':zone?.bias==='short'?'stop':'wait'}`}><b>{zone?.label}</b>：{zone?.plan}</div>
           <div className="st-out"><p><span>區間寬度（前日高低）</span><b>{num(Math.round(fl.range))} 點</b></p><p><span>中軸</span><b>{num(Math.round(fl.mid))}</b></p>
             <p><span>溫度計</span><b>{tz?`${thermo!.toFixed(0)}・${tz[1]}`:'—'}</b></p><p><span>五線譜位階</span><b>{sp?`${sp.z>0?'+':''}${sp.z.toFixed(2)}σ・${sp.zone}`:'—'}</b></p></div>
@@ -121,7 +120,7 @@ function ThermoView({d}:{d:PlanData}){
   const [w,setW]=useState<ThermoWeights>(THERMO_WEIGHTS);
   const series=useMemo(()=>thermometer(d.breadth,d.index,w),[d,w]);
   const pts=series.filter(p=>p.temp!=null);const cur=pts.at(-1);
-  const near=useMemo(()=>d.chain?chainSeries(d.chain,d.chain.date??'2000-01-01').find(s=>/^\d{6}$/.test(s.month)):null,[d.chain]);
+  const near=useMemo(()=>d.chain?chainSeries(d.chain,d.chain.date??'2000-01-01',d.holidays).find(s=>/^\d{6}$/.test(s.month)):null,[d.chain]);
   if(!cur)return <div className="st-body"><p className="live-helper">市場寬度資料不足（需要約 20 個交易日的上市收盤行情）。</p></div>;
   const z=thermoZone(cur.temp!);const prev5=pts.at(-6)?.temp;
   return <div className="st-body">
@@ -165,7 +164,7 @@ function ThermoChart({pts}:{pts:{date:string;temp:number|null;index:number|null}
 // ================= 樂透 OP =================
 function LottoView({d,temp}:{d:PlanData;temp:number|null}){
   const today=d.chain?.date??'';
-  const series=useMemo(()=>d.chain?chainSeries(d.chain,today):[],[d.chain,today]);
+  const series=useMemo(()=>d.chain?chainSeries(d.chain,today,d.holidays):[],[d.chain,today,d.holidays]);
   const [month,setMonth]=useState<string|null>(null),[rule,setRule]=useState<LottoRule>(LOTTO_RULE),[pick,setPick]=useState<string|null>(null);
   const s=series.find(x=>x.month===month)??series[0];
   const list=useMemo(()=>s?lottoList(s,rule):[],[s,rule]);

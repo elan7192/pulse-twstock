@@ -1,5 +1,5 @@
 // 主力地圖：券商分點與公司總部所在縣市，用來找地緣券商。
-// 分點縣市由名稱後綴（例：「元大-竹北」）判斷；公司縣市由證交所／櫃買公司基本資料的地址判斷。
+// 分點縣市以證交所券商分公司名錄（代號→地址）為準，查不到時由名稱中的據點名判斷；公司縣市由證交所／櫃買公司基本資料的地址判斷。
 import type { Dataset, Flow } from './branch';
 
 export const COUNTIES = ['臺北市', '新北市', '基隆市', '桃園市', '新竹市', '新竹縣', '苗栗縣', '臺中市', '彰化縣', '南投縣', '雲林縣', '嘉義市', '嘉義縣', '臺南市', '高雄市', '屏東縣', '宜蘭縣', '花蓮縣', '臺東縣', '澎湖縣', '金門縣', '連江縣'] as const;
@@ -37,13 +37,23 @@ const PLACES: Record<County, string[]> = {
 };
 const PLACE_LIST = (Object.entries(PLACES) as [County, string[]][]).flatMap(([c, ps]) => ps.map(p => [p, c] as [string, County])).sort((a, b) => b[0].length - a[0].length);
 
-/** 分點名稱 → 縣市。只看「-」後的據點名；外資、無據點名、判斷不出來回傳 null。 */
+/** 分點名稱 → 縣市。有「-」時看後面的據點名（示範資料、證交所券商名錄格式）；
+ *  證交所買賣日報表的名稱沒有分隔（例：「元大土城永寧」），取最後出現的地名。外資、只有總公司名稱時回傳 null。 */
 export function branchCounty(name: string): County | null {
-  const i = name.search(/[-－]/); if (i < 0) return null;
-  const loc = name.slice(i + 1).trim();
-  for (const [p, c] of PLACE_LIST) if (loc.startsWith(p)) return c;
-  for (const [p, c] of PLACE_LIST) if (p.length >= 2 && loc.includes(p)) return c;
-  return null;
+  const i = name.search(/[-－]/);
+  const loc = (i >= 0 ? name.slice(i + 1) : name).replace(/\s/g, '');
+  if (i >= 0) for (const [p, c] of PLACE_LIST) if (loc.startsWith(p)) return c;
+  let best: { end: number; len: number; c: County } | null = null;
+  for (const [p, c] of PLACE_LIST) {
+    const k = loc.lastIndexOf(p); if (k < 0 || (i < 0 && k === 0 && loc.length > p.length && !/^(台|臺)/.test(p))) continue; // 沒分隔時，開頭通常是券商品牌名
+    const end = k + p.length; if (!best || end > best.end || (end === best.end && p.length > best.len)) best = { end, len: p.length, c };
+  }
+  return best?.c ?? null;
+}
+/** 券商代號 → 縣市（證交所券商分公司名錄地址）優先，查不到再用名稱判斷。 */
+export function brokerCounty(b: { id: string; name: string; kind: string } | undefined, geo: Record<string, County> = {}): County | null {
+  if (!b || b.kind === 'foreign') return null;
+  return geo[b.id] ?? branchCounty(b.name);
 }
 
 const ZH: [RegExp, County][] = [
@@ -62,7 +72,14 @@ const EN: [string, County][] = [
 /** 地址 → 縣市。中文取第一個縣市名；英文取最後出現的地名（縣市通常在最後）。 */
 export function addressCounty(addr: string): County | null {
   if (!addr) return null;
-  if (/[一-鿿]/.test(addr)) { for (const [re, c] of ZH) if (re.test(addr)) return c; }
+  if (/[\u4e00-\u9fff]/.test(addr)) {
+    const a = addr.replace(/巿/g, '市').replace(/^\(\d+\)/, '');
+    for (const [re, c] of ZH) if (re.test(a)) return c;
+    if (/竹科|新竹科學/.test(a)) return '新竹市';
+    if (/^北市/.test(a)) return '臺北市';
+    for (const [p, c] of PLACE_LIST) if (p.length >= 2 && new RegExp(`${p}(區|市|鎮|鄉)`).test(a)) return c; // 只寫行政區
+    return null;
+  }
   const s = addr.toLowerCase().replace(/[^a-z]/g, '');
   let best: { end: number; len: number; c: County } | null = null;
   for (const [k, c] of EN) { const i = s.lastIndexOf(k); if (i < 0) continue; const end = i + k.length; if (!best || end > best.end || (end === best.end && k.length > best.len)) best = { end, len: k.length, c }; }
@@ -78,10 +95,10 @@ export const DEMO_HQ: Record<string, County> = {
 export type CountyFlow = { county: County; buy: number; sell: number; net: number; brokers: number };
 export type LocalBroker = Flow & { county: County };
 /** 區間各縣市分點買賣（股），以及與公司同縣市的地緣券商。外資與判斷不出縣市的分點另計。 */
-export function brokerMap(ds: Dataset, flows: Flow[], hq: County | null) {
+export function brokerMap(ds: Dataset, flows: Flow[], hq: County | null, geo: Record<string, County> = {}) {
   const m = new Map<County, CountyFlow>(); let unknown = 0; const local: LocalBroker[] = [];
   for (const f of flows) {
-    const b = ds.brokers.get(f.broker); const c = b && b.kind !== 'foreign' ? branchCounty(b.name) : null;
+    const c = brokerCounty(ds.brokers.get(f.broker), geo);
     if (!c) { unknown += Math.abs(f.net); continue; }
     const o = m.get(c) ?? { county: c, buy: 0, sell: 0, net: 0, brokers: 0 }; o.buy += f.buy; o.sell += f.sell; o.net += f.net; o.brokers++; m.set(c, o);
     if (hq && c === hq) local.push({ ...f, county: c });

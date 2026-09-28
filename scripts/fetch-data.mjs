@@ -5,9 +5,9 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync
 import { dirname, join } from 'node:path';
 import { SOURCES, HOSTS, taipeiDate } from '../src/lib/open-sources.ts';
 import { parseMiIndex, num } from './mi-index.mjs';
-import { parseTxo, packChain, breadthSeries } from '../src/lib/plan.ts';
-import { parseFuturesReport } from '../src/lib/futures.ts';
+import { parseTxo, packChain, breadthSeries, txBars } from '../src/lib/plan.ts';
 import { addressCounty } from '../src/lib/geo.ts';
+import { toDate } from '../src/lib/opendata.ts';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 const DATA = join(ROOT, 'data');
@@ -85,27 +85,46 @@ const decode = buf => { const t = buf.toString('utf8').replace(/^\uFEFF/, ''); r
 /** 交易計劃（溫度計、五條線、樂透 OP）用的資料：台指選擇權、台指期日 K、加權指數歷史、上市市場寬度。 */
 async function planData(today) {
   const dir = join(DATA, 'plan');
-  // a. 台指選擇權每日行情：原檔約 4 MB，只保留 TXO 一般時段必要欄位
-  const r = await request('openapi.taifex.com.tw', 'https://openapi.taifex.com.tw/v1/DailyMarketReportOpt', { headers: { Accept: 'application/json,text/csv,*/*' } });
-  if (r.status === 200 && r.buf?.length) {
-    try { const c = parseTxo(decode(r.buf)); if (c.rows.length) { save(join(dir, 'txo.json'), packChain(c)); note(`✓ 台指選擇權 ${c.date}（${c.rows.length} 筆）`); } else note('✗ 台指選擇權：沒有 TXO 資料'); }
-    catch (e) { note(`✗ 台指選擇權：${e}`); }
-  } else note(`✗ 台指選擇權：${r.status || r.error}`);
-
-  // b. 台指期近月日 K：由期貨每日行情逐日累積（一般時段；夜盤另存收盤）
-  const fut = load(join(DATA, 'open', 'taifex_fut_daily.json'));
-  if (fut?.payload) {
-    try {
-      const q = parseFuturesReport(fut.encoding === 'base64' ? decode(Buffer.from(fut.payload, 'base64')) : fut.payload).filter(x => x.contract === 'TX' && /^\d{6}$/.test(x.month));
-      const day = q.filter(x => /一般|Regular/i.test(x.session)).sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))[0];
-      if (day?.date && day.high != null && day.low != null && (day.last ?? day.settle) != null) {
-        const night = q.find(x => x.month === day.month && !/一般|Regular/i.test(x.session));
-        const file = join(dir, 'tx.json'); const hist = (load(file) ?? []).filter(x => x[0] !== day.date);
-        hist.push([day.date, day.month, day.open, day.high, day.low, day.last ?? day.settle, day.settle, day.volume, day.oi, night?.last ?? null]);
-        hist.sort((a, b) => a[0].localeCompare(b[0])); save(file, hist.slice(-400)); note(`✓ 台指期日 K ${day.date}（累積 ${hist.length} 日）`);
-      }
-    } catch (e) { note(`✗ 台指期日 K：${e}`); }
+  // a. 台指期近月日 K：期交所「期貨每日交易行情下載」（CSV，免驗證碼）。不足 200 日時逐月補約 13 個月，之後每次只抓近 20 日
+  const txFile = join(dir, 'tx.json'); const txHist = new Map((load(txFile) ?? []).map(x => [x[0], x.slice(0, 9)]));
+  const post = (url, form) => request('www.taifex.com.tw', url, { method: 'POST', body: new URLSearchParams(form).toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/csv,*/*' } });
+  const slash = d => d.replace(/-/g, '/');
+  const ranges = [];
+  if (txHist.size < 200) for (let k = 12; k >= 0; k--) { const a = new Date(today.slice(0, 7) + '-01T00:00:00Z'); a.setUTCMonth(a.getUTCMonth() - k); const b = new Date(a); b.setUTCMonth(b.getUTCMonth() + 1); b.setUTCDate(0); ranges.push([a.toISOString().slice(0, 10), (b.toISOString().slice(0, 10) < today ? b.toISOString().slice(0, 10) : today)]); }
+  else ranges.push([weekdaysBack(20).at(-1), today]);
+  let txGot = 0;
+  for (const [from, to] of ranges) {
+    const res = await post('https://www.taifex.com.tw/cht/3/futDataDown', { down_type: '1', commodity_id: 'TX', queryStartDate: slash(from), queryEndDate: slash(to) });
+    if (res.status !== 200 || !res.buf?.length) { note(`✗ 台指期下載 ${from}–${to}：${res.status || res.error}`); if (res.status === -1 || res.status === -2) break; continue; }
+    const rows = txBars(decode(res.buf)); rows.forEach(r => txHist.set(r[0], r)); txGot += rows.length;
   }
+  if (!txGot) { // 下載失敗時退回 OpenAPI 當日行情
+    const fut = load(join(DATA, 'open', 'taifex_fut_daily.json'));
+    if (fut?.payload) try { txBars(fut.encoding === 'base64' ? decode(Buffer.from(fut.payload, 'base64')) : fut.payload).forEach(r => txHist.set(r[0], r)); } catch (e) { note(`✗ 台指期日 K：${e}`); }
+  }
+  const tx = [...txHist.values()].sort((a, b) => a[0].localeCompare(b[0])).slice(-400);
+  if (tx.length) { save(txFile, tx); note(`✓ 台指期日 K：本次 ${txGot} 筆，共 ${tx.length} 日（至 ${tx.at(-1)[0]}）`); }
+
+  // 休市日（證交所公告的年度休市表，另加逐日行情為空的日子）：樂透 OP 剩餘交易日用
+  const hFile = join(dir, 'holidays.json'); const hol = new Set(load(hFile) ?? []);
+  const hr = await request('openapi.twse.com.tw', 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule', { headers: { Accept: 'application/json' } });
+  if (hr.status === 200) try { for (const o of JSON.parse(hr.buf.toString('utf8'))) { const d = toDate(o.Date ?? o['日期']); if (d) hol.add(d); } } catch { note('✗ 休市日：不是 JSON'); }
+  const hd = join(DATA, 'twse-daily'); if (existsSync(hd)) for (const f of readdirSync(hd)) if ((load(join(hd, f)) ?? [1]).length === 0) hol.add(f.replace('.json', ''));
+  if (hol.size) save(hFile, [...hol].sort().filter(d => d >= String(+today.slice(0, 4) - 1)));
+
+  // b. 台指選擇權：期交所「選擇權每日交易行情下載」取最近交易日，含官方契約到期日（休市順延）；失敗時用 OpenAPI（無到期日欄）
+  const optDate = tx.at(-1)?.[0];
+  let chain = null;
+  if (optDate) {
+    const res = await post('https://www.taifex.com.tw/cht/3/optDataDown', { down_type: '1', commodity_id: 'TXO', queryStartDate: slash(optDate), queryEndDate: slash(optDate) });
+    if (res.status === 200 && res.buf?.length) try { chain = parseTxo(decode(res.buf)); } catch (e) { note(`✗ 台指選擇權下載：${e}`); }
+  }
+  if (!chain?.rows.length) {
+    const r = await request('openapi.taifex.com.tw', 'https://openapi.taifex.com.tw/v1/DailyMarketReportOpt', { headers: { Accept: 'application/json,text/csv,*/*' } });
+    if (r.status === 200 && r.buf?.length) try { chain = parseTxo(decode(r.buf)); } catch (e) { note(`✗ 台指選擇權：${e}`); }
+  }
+  if (chain?.rows.length) { save(join(dir, 'txo.json'), packChain(chain)); note(`✓ 台指選擇權 ${chain.date}（${chain.rows.length} 筆${chain.rows.some(x => x.expiry) ? '，含官方到期日' : '，到期日為推算'}）`); }
+  else note('✗ 台指選擇權：沒有資料');
 
   // c. 加權指數日 K（證交所 MI_5MINS_HIST，每月一次請求）：保留約 42 個月，已完整的月份不再抓
   const file = join(dir, 'taiex.json'); const have = new Map((load(file) ?? []).map(x => [x[0], x]));
@@ -148,6 +167,15 @@ async function companyGeo() {
     for (const o of Array.isArray(arr) ? arr : []) { const code = String(o[codeKey] ?? o['公司代號'] ?? '').trim(); const c = addressCounty(String(o[addrKey] ?? o['住址'] ?? o['Address'] ?? '')); if (/^[0-9A-Z]{4,6}$/.test(code) && c) { out[code] = c; n++; } }
   }
   if (n) { save(file, out); note(`✓ 公司總部縣市 ${n} 家（累計 ${Object.keys(out).length}）`); }
+  // 券商總公司與分公司名錄（代號 → 地址縣市）：分點地圖以此為準
+  const bFile = join(DATA, 'geo', 'brokers.json'); const bOut = { ...(load(bFile) ?? {}) }; let bn = 0;
+  for (const k of ['brokerService/brokerList', 'opendata/OpenData_BRK02']) { // 總公司、分公司
+    const r = await request('openapi.twse.com.tw', `https://openapi.twse.com.tw/v1/${k}`, { headers: { Accept: 'application/json' } });
+    if (r.status !== 200) { note(`✗ 券商名錄 ${k}：${r.status || r.error}`); continue; }
+    let arr; try { arr = JSON.parse(r.buf.toString('utf8').replace(/^\uFEFF/, '')); } catch { note(`✗ 券商名錄 ${k}：不是 JSON（可能被防火牆擋下）`); continue; }
+    for (const o of Array.isArray(arr) ? arr : []) { const code = String(o['證券商代號'] ?? o.Code ?? '').trim().toUpperCase(); const c = addressCounty(String(o['地址'] ?? o.Address ?? '')); if (/^[0-9A-Z]{4}$/.test(code) && c) { bOut[code] = c; bn++; } }
+  }
+  if (bn) { save(bFile, bOut); note(`✓ 券商分點縣市 ${bn} 筆（累計 ${Object.keys(bOut).length}）`); }
 }
 
 async function main() {
@@ -161,7 +189,9 @@ async function main() {
 
   // 2. 可轉債日行情：近 25 個工作日，過去日期已有檔就略過
   const cbDir = join(DATA, 'open', 'tpex_cb_quotes');
+  const holidays = new Set(load(join(DATA, 'plan', 'holidays.json')) ?? []);
   for (const d of weekdaysBack(25)) {
+    if (holidays.has(d)) continue; // 證交所休市日沒有行情表
     const f = join(cbDir, `${d}.json`), old = load(f);
     if (old && d < today && (old.status === 200 || old.status === 404)) continue;
     await fetchSource('tpex_cb_quotes', { date: d }, f);

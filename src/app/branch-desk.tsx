@@ -2,11 +2,11 @@
 import {useEffect,useMemo,useState,type ReactNode} from 'react';
 import {Crosshair,Database,Globe,Layers3,Radio,Search,SlidersHorizontal,TriangleAlert,Upload,Users,X} from 'lucide-react';
 import {DATA_MODE} from '@/lib/data-mode';
-import {brokerMap,branchCounty,DEMO_HQ,TILE,type County} from '@/lib/geo';
+import {brokerCounty,brokerMap,DEMO_HQ,TILE,type County} from '@/lib/geo';
 import {addCodes,addGroup,categories,DEFAULT_WATCH,deleteGroup,hotCombos,moveCode,parseCodes,removeCode,renameGroup,sanitizeWatch,type Watch} from '@/lib/watch';
 import {num} from '@/lib/market';
 import {
-  anomalies,backtest,buildDataset,concentrationSeries,dateFromText,decodeBytes,demoShared,flipPressure,heavyBrokers,
+  anomalies,backtest,buildDataset,fillPrices,type SeriesBar,concentrationSeries,dateFromText,decodeBytes,demoShared,flipPressure,heavyBrokers,
   KIND_LABEL,ledger,mainStreak,parseBrokerCsv,priceLevels,profileBrokers,rangeStat,screenAt,STYLE_LABEL,
   type Broker,type BrokerProfile,type Dataset,type DayStat,type Flow,type RawDay,type ScreenRule,
 } from '@/lib/branch';
@@ -34,12 +34,19 @@ export default function BranchDesk(){
   const [imported,setImported]=useState<ImportState|null>(null),[useImport,setUseImport]=useState(false);
   const [view,setView]=useState<View>('stock');
   const [code,setCode]=useState('2330'),[date,setDate]=useState<string|null>(null),[range,setRange]=useState(5),[broker,setBroker]=useState<string|null>(null);
-  const [watch,setWatchRaw]=useState<Watch>(DEFAULT_WATCH),[group,setGroup]=useState('all'),[editing,setEditing]=useState(false),[hq,setHq]=useState<Record<string,County>>({});
+  const [watch,setWatchRaw]=useState<Watch>(DEFAULT_WATCH),[group,setGroup]=useState('all'),[editing,setEditing]=useState(false),[hq,setHq]=useState<Record<string,County>>({}),[bgeo,setBgeo]=useState<Record<string,County>>({});
   const setWatch=(w:Watch)=>{setWatchRaw(w);try{localStorage.setItem(WATCH,JSON.stringify(w));}catch{/* 無法保存時只保留在本頁 */}};
   useEffect(()=>{try{const w=sanitizeWatch(JSON.parse(localStorage.getItem(WATCH)??'null'));if(w)setWatchRaw(w);}catch{/* 使用預設自選 */}
-    if(DATA_MODE.kind==='static')fetch(`${DATA_MODE.base}data/geo/hq.json`,{cache:'no-cache'}).then(r=>r.ok?r.json():{}).then(setHq).catch(()=>{});},[]);
+    if(DATA_MODE.kind==='static'){const get=(f:string)=>fetch(`${DATA_MODE.base}data/geo/${f}.json`,{cache:'no-cache'}).then(r=>r.ok?r.json():{}).catch(()=>({}));get('hq').then(setHq);get('brokers').then(setBgeo);}},[]);
   useEffect(()=>{try{const s=localStorage.getItem(STORE);if(s){const v=JSON.parse(s) as ImportState;if(v?.raw?.length)setImported(v);}}catch{/* 無法讀取瀏覽器儲存時以示範資料運作 */}},[]);
-  const ds=useMemo(()=>useImport&&imported?.raw.length?buildDataset(imported.raw,imported.brokers,imported.names,'import'):getDemo(),[useImport,imported]);
+  // 匯入資料多半只有分點成交價：靜態版從 data/series 補上真實開高低收
+  const [series,setSeries]=useState<Record<string,SeriesBar[]>>({});
+  useEffect(()=>{if(!useImport||!imported?.raw.length||DATA_MODE.kind!=='static')return;const ctl=new AbortController();
+    const codes=[...new Set(imported.raw.map(r=>r.code))].filter(c=>!series[c]).slice(0,60);
+    Promise.all(codes.map(c=>fetch(`${DATA_MODE.base}data/series/${c}.json`,{signal:ctl.signal}).then(r=>r.ok?r.json():null).catch(()=>null).then(v=>[c,v] as const)))
+      .then(list=>{const got=Object.fromEntries(list.filter(([,v])=>Array.isArray(v)));if(Object.keys(got).length)setSeries(o=>({...o,...got}));});
+    return()=>ctl.abort();},[useImport,imported]);// eslint-disable-line react-hooks/exhaustive-deps
+  const ds=useMemo(()=>useImport&&imported?.raw.length?buildDataset(fillPrices(imported.raw,series),imported.brokers,imported.names,'import'):getDemo(),[useImport,imported,series]);
   const cur=ds.days[code]?code:ds.stocks[0];
   const open=(c:string,b?:string|null)=>{setCode(c);setDate(null);if(b!==undefined)setBroker(b);setView('stock');};
   const nav:[View,string,ReactNode][]=[['stock','個股分點',<Crosshair key="a" size={15}/>],['desk','分點調查局',<Users key="b" size={15}/>],['screen','籌碼選股',<SlidersHorizontal key="c" size={15}/>],['import','匯入資料',<Upload key="d" size={15}/>]];
@@ -47,10 +54,10 @@ export default function BranchDesk(){
     <div className="page-heading"><div><div className="eyebrow">BROKER BRANCH FLOW</div><h1>分點籌碼・主力進出</h1></div>
       <div className="bd-nav" role="tablist" aria-label="分點功能">{nav.map(([v,l,i])=><button key={v} role="tab" aria-selected={view===v} className={view===v?'active':''} onClick={()=>setView(v)}>{i}{l}</button>)}</div></div>
     <div className={`feed-status bd-source ${ds.source==='synthetic'?'':'imported'}`} role="status"><Database size={17}/><b>{ds.source==='synthetic'?'合成示範資料':'已匯入分點資料'}</b>
-      <span>{ds.source==='synthetic'?`虛構券商、固定亂數：${ds.stocks.length} 檔 × ${ds.dates.length} 個交易日。公式可用，數字不代表真實市場。`:`${ds.stocks.length} 檔、${ds.dates.length} 個交易日（${ds.dates[0]} ~ ${ds.dates.at(-1)}）。無開收盤價時以分點成交均價代替。`}</span>
+      <span>{ds.source==='synthetic'?`虛構券商、固定亂數：${ds.stocks.length} 檔 × ${ds.dates.length} 個交易日。證交所分點（買賣日報表）下載需人工輸入驗證碼，網站不自動抓；匯入你下載的 CSV 後即為真實分點。`:`${ds.stocks.length} 檔、${ds.dates.length} 個交易日（${ds.dates[0]} ~ ${ds.dates.at(-1)}）。${Object.keys(series).length?`開高低收取自證交所／櫃買收盤行情（${ds.stocks.filter(c=>series[c]).length} 檔）；`:''}無收盤行情時以分點成交均價代替。`}</span>
       <small>{ds.source==='synthetic'?<button className="text-button" onClick={()=>setView('import')}>匯入真實買賣日報表 →</button>:<button className="text-button" onClick={()=>setUseImport(false)}>切回示範資料</button>}</small></div>
     {!ds.stocks.length?<div className="panel empty-state bd-margin">目前沒有可用資料。</div>:
-     view==='stock'?<StockView ds={ds} code={cur} setCode={c=>{setCode(c);}} date={date} setDate={setDate} range={range} setRange={setRange} broker={broker} setBroker={setBroker} watch={watch} setWatch={setWatch} group={group} setGroup={setGroup} onEdit={()=>setEditing(true)} hq={ds.source==='synthetic'?DEMO_HQ:{...DEMO_HQ,...hq}}/>:
+     view==='stock'?<StockView ds={ds} code={cur} setCode={c=>{setCode(c);}} date={date} setDate={setDate} range={range} setRange={setRange} broker={broker} setBroker={setBroker} watch={watch} setWatch={setWatch} group={group} setGroup={setGroup} onEdit={()=>setEditing(true)} hq={ds.source==='synthetic'?DEMO_HQ:{...DEMO_HQ,...hq}} geo={ds.source==='synthetic'?{}:bgeo}/>:
      view==='desk'?<DeskView ds={ds} onOpen={open}/>:
      view==='screen'?<ScreenView ds={ds} onOpen={open}/>:
      <ImportView imported={imported} useImport={useImport} onChange={v=>{setImported(v);if(!v)setUseImport(false);}} onUse={()=>{setUseImport(true);setDate(null);setBroker(null);setView('stock');}} onDemo={()=>setUseImport(false)}/>}
@@ -59,7 +66,7 @@ export default function BranchDesk(){
 }
 
 // ================= 個股分點 =================
-function StockView({ds,code,setCode,date,setDate,range,setRange,broker,setBroker,watch,setWatch,group,setGroup,onEdit,hq}:{ds:Dataset;code:string;setCode:(c:string)=>void;date:string|null;setDate:(d:string|null)=>void;range:number;setRange:(n:number)=>void;broker:string|null;setBroker:(b:string|null)=>void;watch:Watch;setWatch:(w:Watch)=>void;group:string;setGroup:(g:string)=>void;onEdit:()=>void;hq:Record<string,County>}){
+function StockView({ds,code,setCode,date,setDate,range,setRange,broker,setBroker,watch,setWatch,group,setGroup,onEdit,hq,geo}:{ds:Dataset;code:string;setCode:(c:string)=>void;date:string|null;setDate:(d:string|null)=>void;range:number;setRange:(n:number)=>void;broker:string|null;setBroker:(b:string|null)=>void;watch:Watch;setWatch:(w:Watch)=>void;group:string;setGroup:(g:string)=>void;onEdit:()=>void;hq:Record<string,County>;geo:Record<string,County>}){
   const [query,setQuery]=useState('');
   const days=ds.days[code];
   const found=date?days.findIndex(d=>d.date===date):-1;const idx=found<0?days.length-1:found;
@@ -102,10 +109,10 @@ function StockView({ds,code,setCode,date,setDate,range,setRange,broker,setBroker
         <div className="chart-bottom"><span><i className="dot amber"/>點選 K 棒切換統計日</span><span>區間 {md(rs.from)} – {md(rs.to)}（{rdays.length} 日）</span><span className="bd-row"><button className="text-button" disabled={idx<=0} onClick={()=>setDate(days[idx-1].date)}>◀ 前一日</button><button className="text-button" disabled={idx>=days.length-1} onClick={()=>setDate(days[idx+1].date)}>後一日 ▶</button></span></div></div>
 
       <div className="bottom-grid">
-        <TopTable title="買超 TOP15" side="buy" flows={rs.topBuy} volume={rs.volume} ds={ds} profiles={profiles} selected={broker} onPick={pick} hq={hq[code]??null}/>
-        <TopTable title="賣超 TOP15" side="sell" flows={rs.topSell} volume={rs.volume} ds={ds} profiles={profiles} selected={broker} onPick={pick} hq={hq[code]??null}/>
+        <TopTable title="買超 TOP15" side="buy" flows={rs.topBuy} volume={rs.volume} ds={ds} profiles={profiles} selected={broker} onPick={pick} hq={hq[code]??null} geo={geo}/>
+        <TopTable title="賣超 TOP15" side="sell" flows={rs.topSell} volume={rs.volume} ds={ds} profiles={profiles} selected={broker} onPick={pick} hq={hq[code]??null} geo={geo}/>
       </div>
-      <BrokerMapPanel ds={ds} code={code} flows={rs.flows} volume={rs.volume} hq={hq[code]??null} label={range===1?'當日':`近 ${range} 日`} selected={broker} onPick={pick}/>
+      <BrokerMapPanel ds={ds} geo={geo} code={code} flows={rs.flows} volume={rs.volume} hq={hq[code]??null} label={range===1?'當日':`近 ${range} 日`} selected={broker} onPick={pick}/>
       {broker&&<BrokerDetail ds={ds} code={code} days={days} idx={idx} broker={broker} profile={profiles.get(broker)} onClose={()=>setBroker(null)}/>}
     </section>
 
@@ -137,12 +144,12 @@ function StockView({ds,code,setCode,date,setDate,range,setRange,broker,setBroker
   </div>;
 }
 
-function TopTable({title,side,flows,volume,ds,profiles,selected,onPick,hq}:{title:string;side:'buy'|'sell';flows:Flow[];volume:number;ds:Dataset;profiles:Map<string,BrokerProfile>;selected:string|null;onPick:(b:string)=>void;hq?:County|null}){
+function TopTable({title,side,flows,volume,ds,profiles,selected,onPick,hq,geo}:{title:string;side:'buy'|'sell';flows:Flow[];volume:number;ds:Dataset;profiles:Map<string,BrokerProfile>;selected:string|null;onPick:(b:string)=>void;hq?:County|null;geo?:Record<string,County>}){
   return <div className="panel"><div className="panel-title"><h2 className={side==='buy'?'up':'down'}>{title}</h2><span className="muted small">點選分點看明細</span></div>
     <div className="bd-table-wrap"><table className="bd-table"><thead><tr><th>#</th><th>券商分點</th><th>買進</th><th>賣出</th><th>{side==='buy'?'買超':'賣超'}</th><th>均價</th><th>佔量</th></tr></thead>
       <tbody>{flows.map((f,i)=>{const b=ds.brokers.get(f.broker);const avg=side==='buy'?(f.buy?f.buyAmt/f.buy:null):(f.sell?f.sellAmt/f.sell:null);
         return <tr key={f.broker} className={selected===f.broker?'selected':''} onClick={()=>onPick(f.broker)} tabIndex={0} onKeyDown={e=>{if(e.key==='Enter')onPick(f.broker);}}>
-          <td className="muted">{i+1}</td><td className="bd-name">{b?.name??f.broker}<BrokerTags b={b} p={profiles.get(f.broker)}/>{hq&&b&&b.kind!=='foreign'&&branchCounty(b.name)===hq&&<i className="bd-badge local" title={`分點與公司總部同在${hq}`}>地緣</i>}</td><td>{fl(f.buy)}</td><td>{fl(f.sell)}</td>
+          <td className="muted">{i+1}</td><td className="bd-name">{b?.name??f.broker}<BrokerTags b={b} p={profiles.get(f.broker)}/>{hq&&brokerCounty(b,geo)===hq&&<i className="bd-badge local" title={`分點與公司總部同在${hq}`}>地緣</i>}</td><td>{fl(f.buy)}</td><td>{fl(f.sell)}</td>
           <td className={side==='buy'?'up':'down'}>{fl(Math.abs(f.net))}</td><td>{px(avg)}</td><td className="muted">{volume?(Math.abs(f.net)/volume*100).toFixed(1):'—'}%</td></tr>;})}
         {!flows.length&&<tr><td colSpan={7} className="muted">無資料</td></tr>}</tbody></table></div></div>;
 }
@@ -227,8 +234,8 @@ function BrokerDetail({ds,code,days,idx,broker,profile,onClose}:{ds:Dataset;code
 }
 
 // ================= 主力地圖 =================
-function BrokerMapPanel({ds,code,flows,volume,hq,label,selected,onPick}:{ds:Dataset;code:string;flows:Flow[];volume:number;hq:County|null;label:string;selected:string|null;onPick:(b:string)=>void}){
-  const m=useMemo(()=>brokerMap(ds,flows,hq),[ds,flows,hq]);
+function BrokerMapPanel({ds,geo,code,flows,volume,hq,label,selected,onPick}:{ds:Dataset;geo:Record<string,County>;code:string;flows:Flow[];volume:number;hq:County|null;label:string;selected:string|null;onPick:(b:string)=>void}){
+  const m=useMemo(()=>brokerMap(ds,flows,hq,geo),[ds,flows,hq,geo]);
   const by=new Map(m.counties.map(c=>[c.county,c]));const max=Math.max(1,...m.counties.map(c=>Math.abs(c.net)));
   const CW=66,CH=36,G=4,W=4*(CW+G),H=11*(CH+G);
   return <div className="panel"><div className="panel-title"><h2><Globe size={16}/>主力地圖 <span className="muted small">/ 分點所在縣市・{label}</span></h2><span className="tag">{hq?`公司總部 ${hq}`:'總部縣市不明'}</span></div>
@@ -248,7 +255,7 @@ function BrokerMapPanel({ds,code,flows,volume,hq,label,selected,onPick}:{ds:Data
         <h3 className="bd-sub">縣市淨買賣排行</h3>
         <div className="bd-mini-list bd-pad">{m.counties.slice(0,6).map(c=><div key={c.county} className="bd-map-row"><span>{c.county===hq?'★ ':''}{c.county} <small className="muted">{c.brokers} 家</small></span><b className={tone(c.net)}>{fl(c.net,true)} 張</b></div>)}</div>
       </div></div>
-    <p className="live-helper">分點縣市依名稱後的據點名判斷（例：「元大-竹北」＝新竹縣）；外資與判斷不出據點的分點不上圖（{fl(m.unknown)} 張）。公司總部縣市取自證交所、櫃買公司基本資料地址。地緣券商常是公司派、員工或在地大戶，連續買超值得留意，但不等於內線。</p></div>;
+    <p className="live-helper">分點縣市以證交所券商分公司名錄的地址為準，名錄沒有的分點再由名稱中的據點名判斷（例：「元大土城永寧」＝新北市）；外資與判斷不出據點的分點不上圖（{fl(m.unknown)} 張）。公司總部縣市取自證交所、櫃買公司基本資料地址。地緣券商常是公司派、員工或在地大戶，連續買超值得留意，但不等於內線。</p></div>;
 }
 
 // ================= 編輯自選股 =================

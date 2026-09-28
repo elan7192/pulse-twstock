@@ -14,6 +14,7 @@ export const HOSTS: Record<string, HostPolicy> = {
   'www.twse.com.tw': { interval: 4000, budget: 150 },       // 個股月資料：證交所網站對頻率較敏感
   'www.tpex.org.tw': { interval: 2500, budget: 300 },
   'openapi.taifex.com.tw': { interval: 2000, budget: 200 },
+  'www.taifex.com.tw': { interval: 3000, budget: 30 },         // 期貨／選擇權每日行情下載（CSV）
 };
 
 const MIN = 60000, HOUR = 3600000;

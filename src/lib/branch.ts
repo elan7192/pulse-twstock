@@ -79,6 +79,19 @@ export function summarizeDay(raw: RawDay): DayStat {
   };
 }
 
+/** 日 K：[日期, 開, 高, 低, 收, 量]（網站 data/series/{代號}.json 格式）。 */
+export type SeriesBar = [string, number | null, number | null, number | null, number | null, number | null];
+/** 匯入的分點資料沒有開高低收時，用公開收盤行情補上（已有的值不覆蓋）。 */
+export function fillPrices(raw: RawDay[], series: Record<string, SeriesBar[] | undefined>): RawDay[] {
+  const idx = new Map<string, Map<string, SeriesBar>>();
+  return raw.map(r => {
+    const s = series[r.code]; if (!s) return r;
+    let m = idx.get(r.code); if (!m) { m = new Map(s.map(b => [b[0], b])); idx.set(r.code, m); }
+    const b = m.get(r.date); if (!b) return r;
+    return { ...r, open: r.open ?? b[1], high: r.high ?? b[2], low: r.low ?? b[3], close: r.close ?? b[4] };
+  });
+}
+
 export function buildDataset(raw: RawDay[], brokers: Broker[], names: Record<string, string>, source: Dataset['source']): Dataset {
   const days: Record<string, DayStat[]> = {};
   const byKey = new Map<string, RawDay>();

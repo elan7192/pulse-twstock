@@ -116,28 +116,44 @@ export function thermometer(breadth: BreadthRow[], index: OHLC[], w: ThermoWeigh
   });
 }
 
+/** 台指期日 K：[日期, 月份, 開, 高, 低, 收, 結算, 量, 未平倉]。 */
+export type TxRow = [string, string, number | null, number, number, number, number | null, number | null, number | null];
+/** 期交所 futDataDown（CSV）或 DailyMarketReportFut → 台指期近月（每日一般時段成交量最大的單一月份）日 K。 */
+export function txBars(text: string, contract = 'TX'): TxRow[] {
+  const by = new Map<string, TxRow & { 7: number }>();
+  for (const r of records(text)) {
+    if ((r.Contract ?? r['契約'] ?? '').toUpperCase() !== contract || !/一般|Regular/i.test(r.TradingSession ?? r['交易時段'] ?? '')) continue;
+    const month = String(r['ContractMonth(Week)'] ?? r['到期月份(週別)'] ?? '').replace(/\s/g, ''); if (!/^\d{6}$/.test(month)) continue;
+    const date = toDate(r.Date ?? r['交易日期']); const h = num(r.High ?? r['最高價']), l = num(r.Low ?? r['最低價']), c = num(r.Last ?? r['收盤價']) ?? num(r.SettlementPrice ?? r['結算價']);
+    const vol = num(r.Volume ?? r['成交量']) ?? 0; if (!date || h == null || l == null || c == null) continue;
+    const old = by.get(date); if (old && old[7] >= vol) continue;
+    by.set(date, [date, month, num(r.Open ?? r['開盤價']), h, l, c, num(r.SettlementPrice ?? r['結算價']), vol, num(r.OpenInterest ?? r['未沖銷契約數'])] as TxRow & { 7: number });
+  }
+  return [...by.values()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
 // ======================= 台指選擇權（樂透 OP） =======================
 
-export type OptRow = { month: string; strike: number; cp: 'C' | 'P'; close: number | null; settle: number | null; volume: number; oi: number; bid: number | null; ask: number | null };
+export type OptRow = { month: string; strike: number; cp: 'C' | 'P'; close: number | null; settle: number | null; volume: number; oi: number; bid: number | null; ask: number | null; expiry?: string | null };
 export type OptChain = { date: string | null; rows: OptRow[] };
-/** 期交所 DailyMarketReportOpt（JSON 或 CSV）→ 台指選擇權一般時段。 */
+/** 期交所 DailyMarketReportOpt（OpenAPI JSON）或 optDataDown（下載 CSV，含「契約到期日」）→ 台指選擇權一般時段。 */
 export function parseTxo(text: string, contract = 'TXO'): OptChain {
   let date: string | null = null;
   const rows = records(text).filter(r => (r.Contract ?? r['契約'] ?? '').toUpperCase() === contract && /一般|Regular/i.test(r.TradingSession ?? r['交易時段'] ?? '一般')).map(r => {
     date ??= toDate(r.Date ?? r['交易日期']);
     const cp = String(r.CallPut ?? r['買賣權'] ?? ''); return {
       month: String(r['ContractMonth(Week)'] ?? r['到期月份(週別)'] ?? '').replace(/\s/g, ''), strike: num(r.StrikePrice ?? r['履約價']) ?? 0, cp: (/買|call/i.test(cp) ? 'C' : 'P') as 'C' | 'P',
-      close: num(r.Close ?? r['收盤價']), settle: num(r.SettlementPrice ?? r['結算價']), volume: num(r.Volume ?? r['成交量']) ?? 0, oi: num(r.OpenInterest ?? r['未沖銷契約數']) ?? 0, bid: num(r.BestBid ?? r['最後最佳買價']), ask: num(r.BestAsk ?? r['最後最佳賣價']),
+      close: num(r.Close ?? r['收盤價']), settle: num(r.SettlementPrice ?? r['結算價']), volume: num(r.Volume ?? r['成交量']) ?? 0, oi: num(r.OpenInterest ?? r['未沖銷契約數']) ?? 0, bid: num(r.BestBid ?? r['最後最佳買價']), ask: num(r.BestAsk ?? r['最後最佳賣價']), expiry: toDate(r['契約到期日'] ?? r.ExpirationDate ?? ''),
     };
   }).filter(r => r.month && r.strike > 0);
   return { date, rows };
 }
-/** 壓縮格式（網站資料檔用）：[月份, 履約價, C/P, 收盤, 結算, 量, 未平倉, 買, 賣]。 */
-export type OptCompact = [string, number, 'C' | 'P', number | null, number | null, number, number, number | null, number | null];
-export const packChain = (c: OptChain) => ({ date: c.date, rows: c.rows.map(r => [r.month, r.strike, r.cp, r.close, r.settle, r.volume, r.oi, r.bid, r.ask] as OptCompact) });
-export const unpackChain = (p: { date: string | null; rows: OptCompact[] }): OptChain => ({ date: p.date, rows: p.rows.map(([month, strike, cp, close, settle, volume, oi, bid, ask]) => ({ month, strike, cp, close, settle, volume, oi, bid, ask })) });
+/** 壓縮格式（網站資料檔用）：[月份, 履約價, C/P, 收盤, 結算, 量, 未平倉, 買, 賣, 到期日]。 */
+export type OptCompact = [string, number, 'C' | 'P', number | null, number | null, number, number, number | null, number | null, (string | null)?];
+export const packChain = (c: OptChain) => ({ date: c.date, rows: c.rows.map(r => [r.month, r.strike, r.cp, r.close, r.settle, r.volume, r.oi, r.bid, r.ask, r.expiry ?? null] as OptCompact) });
+export const unpackChain = (p: { date: string | null; rows: OptCompact[] }): OptChain => ({ date: p.date, rows: p.rows.map(([month, strike, cp, close, settle, volume, oi, bid, ask, expiry]) => ({ month, strike, cp, close, settle, volume, oi, bid, ask, expiry: expiry ?? null })) });
 
-/** 契約到期日：月選為第三個週三，W n＝當月第 n 個週三，F n＝當月第 n 個週五（未處理休市順延）。 */
+/** 契約到期日推算：月選為第三個週三，W n＝當月第 n 個週三，F n＝當月第 n 個週五。不含休市順延，只在資料沒有「契約到期日」時使用。 */
 export function txoExpiry(month: string): string | null {
   const m = month.match(/^(\d{4})(\d{2})(?:([WF])(\d))?$/); if (!m) return null;
   const [, y, mo, kind, nth] = m; const wd = kind === 'F' ? 5 : 3; const k = nth ? +nth : 3;
@@ -145,22 +161,23 @@ export function txoExpiry(month: string): string | null {
   d.setUTCDate(d.getUTCDate() + 7 * (k - 1)); return d.getUTCMonth() === +mo - 1 ? d.toISOString().slice(0, 10) : null;
 }
 const optPx = (r: OptRow) => r.close ?? (r.bid != null && r.ask != null ? (r.bid + r.ask) / 2 : r.settle);
-/** 交易日數（含到期日當天，不含今天；只排除週末）。 */
-export function tradingDaysTo(from: string, to: string) { let n = 0; const d = new Date(from + 'T00:00:00Z'), e = new Date(to + 'T00:00:00Z'); while (d < e) { d.setUTCDate(d.getUTCDate() + 1); const w = d.getUTCDay(); if (w > 0 && w < 6) n++; } return n; }
+/** 交易日數（含到期日當天，不含今天；排除週末與證交所休市日）。 */
+export function tradingDaysTo(from: string, to: string, holidays: ReadonlySet<string> = new Set()) { let n = 0; const d = new Date(from + 'T00:00:00Z'), e = new Date(to + 'T00:00:00Z'); while (d < e) { d.setUTCDate(d.getUTCDate() + 1); const w = d.getUTCDay(); if (w > 0 && w < 6 && !holidays.has(d.toISOString().slice(0, 10))) n++; } return n; }
 
 export type Series = { month: string; expiry: string; days: number; F: number; atm: number; iv: number | null; rows: OptRow[]; pcOi: number | null };
 /** 各到期序列：以買賣權價差最小的履約價反推價平與隱含期貨價（F ≈ K ＋ C − P），並估價平隱波。 */
-export function chainSeries(chain: OptChain, today: string): Series[] {
+export function chainSeries(chain: OptChain, today: string, holidays: ReadonlySet<string> = new Set()): Series[] {
   const by = new Map<string, OptRow[]>(); for (const r of chain.rows) { const a = by.get(r.month) ?? []; a.push(r); by.set(r.month, a); }
   const out: Series[] = [];
   for (const [month, rows] of by) {
-    const expiry = txoExpiry(month); if (!expiry || expiry < today) continue;
+    // 以期交所公布的契約到期日為準（遇休市會順延）；OpenAPI 沒有此欄時才用規則推算
+    const expiry = rows.find(r => r.expiry)?.expiry ?? txoExpiry(month); if (!expiry || expiry < today) continue;
     const pair = new Map<number, { C?: number; P?: number }>();
     for (const r of rows) { const p = r.settle ?? optPx(r); if (p == null) continue; const o = pair.get(r.strike) ?? {}; o[r.cp] = p; pair.set(r.strike, o); }
     let best: [number, number] | null = null;
     for (const [K, o] of pair) if (o.C != null && o.P != null) { const g = Math.abs(o.C - o.P); if (!best || g < Math.abs((pair.get(best[0])!.C!) - (pair.get(best[0])!.P!))) best = [K, K + o.C - o.P]; }
     if (!best) continue;
-    const days = Math.max(1, tradingDaysTo(today, expiry)); const T = days / 252; const atm = best[0], F = best[1];
+    const days = Math.max(1, tradingDaysTo(today, expiry, holidays)); const T = days / 252; const atm = best[0], F = best[1];
     const ivs = (['C', 'P'] as const).map(cp => { const p = pair.get(atm)?.[cp]; return p != null ? impliedVol(cp === 'C' ? 'call' : 'put', p, F, atm, T, 0) : null; }).filter((x): x is number => x != null);
     const cOi = sum(rows.filter(r => r.cp === 'C').map(r => r.oi)), pOi = sum(rows.filter(r => r.cp === 'P').map(r => r.oi));
     out.push({ month, expiry, days, F, atm, iv: ivs.length ? mean(ivs) : null, rows, pcOi: cOi ? pOi / cOi : null });

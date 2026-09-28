@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import * as G from '../src/lib/geo.ts';
 import * as W from '../src/lib/watch.ts';
-import { demoShared, rangeStat } from '../src/lib/branch.ts';
+import { demoShared, fillPrices, rangeStat } from '../src/lib/branch.ts';
 
 // 1. 分點名稱 → 縣市
 for (const [n, c] of [['元大-竹北', '新竹縣'], ['凱基-台北', '臺北市'], ['富邦-建國', '臺北市'], ['永豐金-新營', '臺南市'], ['統一-員林', '彰化縣'], ['兆豐-北高雄', '高雄市'], ['元富-中壢', '桃園市'], ['華南永昌-板橋', '新北市']]) assert.equal(G.branchCounty(n), c, n);
@@ -48,3 +48,22 @@ assert.ok(hot.buy.length > 0 && hot.buy.every(h => h.net > 0) && hot.sell.every(
 for (let i = 1; i < hot.buy.length; i++) assert.ok(hot.buy[i - 1].amount >= hot.buy[i].amount);
 const per = {}; hot.buy.forEach(h => { per[h.code] = (per[h.code] ?? 0) + 1; }); assert.ok(Object.values(per).every(n => n <= 3));
 console.log('分點地圖、自選股群組、熱門券商組合 ok');
+
+// 6. 真實買賣日報表的分點名稱沒有「-」；券商名錄代號優先
+for (const [n, c] of [['元大土城永寧', '新北市'], ['凱基台北', '臺北市'], ['統一員林', '彰化縣'], ['群益金鼎大安', '臺北市'], ['合庫', null], ['永豐金', null], ['新光', null]]) assert.equal(G.branchCounty(n), c, n);
+assert.equal(G.brokerCounty({ id: '1021', name: '合庫台中', kind: 'gov' }, { 1021: '臺中市' }), '臺中市');
+assert.equal(G.brokerCounty({ id: '1020', name: '合庫', kind: 'gov' }, { 1020: '臺北市' }), '臺北市', '總公司靠名錄');
+assert.equal(G.brokerCounty({ id: '1440', name: '美林', kind: 'foreign' }, { 1440: '臺北市' }), null, '外資不上圖');
+assert.equal(G.addressCounty('新竹科學園區力行六路8號'), '新竹市');
+assert.equal(G.addressCounty('新竹科學園區新竹巿力行五路七號'), '新竹市');
+assert.equal(G.addressCounty('台北巿大安區忠孝東路四段219號12樓'), '臺北市');
+assert.equal(G.addressCounty('板橋區民生路一段一號'), '新北市');
+assert.equal(G.addressCounty('(235)新北巿中和區建一路166號3樓'), '新北市');
+assert.equal(G.addressCounty('廣東省東莞市厚街鎮橋頭第三工業區'), null);
+
+// 7. 匯入分點資料補上公開收盤行情（不覆蓋已有值）
+const raw = [{ date: '2026-09-24', code: '2330', open: null, close: null, fills: [] }, { date: '2026-09-24', code: '2317', open: 1, close: 2, fills: [] }];
+const filled = fillPrices(raw, { 2330: [['2026-09-24', 2480, 2490, 2470, 2475, 1]], 2317: [['2026-09-24', 9, 9, 9, 9, 1]] });
+assert.deepEqual([filled[0].open, filled[0].high, filled[0].low, filled[0].close], [2480, 2490, 2470, 2475]);
+assert.equal(filled[1].open, 1); assert.equal(filled[1].close, 2);
+console.log('真實分點名稱、券商名錄、公司地址、收盤行情補值 ok');
