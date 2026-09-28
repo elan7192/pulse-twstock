@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import * as G from '../src/lib/geo.ts';
 import * as W from '../src/lib/watch.ts';
-import { demoShared, fillPrices, rangeStat } from '../src/lib/branch.ts';
+import { demoShared, fillPrices, mainVerdict, rangeStat } from '../src/lib/branch.ts';
 
 // 1. 分點名稱 → 縣市
 for (const [n, c] of [['元大-竹北', '新竹縣'], ['凱基-台北', '臺北市'], ['富邦-建國', '臺北市'], ['永豐金-新營', '臺南市'], ['統一-員林', '彰化縣'], ['兆豐-北高雄', '高雄市'], ['元富-中壢', '桃園市'], ['華南永昌-板橋', '新北市']]) assert.equal(G.branchCounty(n), c, n);
@@ -67,3 +67,8 @@ const filled = fillPrices(raw, { 2330: [['2026-09-24', 2480, 2490, 2470, 2475, 1
 assert.deepEqual([filled[0].open, filled[0].high, filled[0].low, filled[0].close], [2480, 2490, 2470, 2475]);
 assert.equal(filled[1].open, 1); assert.equal(filled[1].close, 2);
 console.log('真實分點名稱、券商名錄、公司地址、收盤行情補值 ok');
+
+// 8. 今日主力動向分級
+for (const [s, l] of [[0.19, '大買'], [0.1, '大買'], [0.05, '買'], [0.03, '買'], [0.029, '中性'], [0, '中性'], [-0.029, '中性'], [-0.03, '賣'], [-0.1, '大賣']]) assert.equal(mainVerdict(s).label, l, String(s));
+assert.equal(mainVerdict(0.2).level, 'buy2'); assert.equal(mainVerdict(-0.2).level, 'sell2');
+console.log('主力動向分級 ok');

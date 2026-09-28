@@ -617,3 +617,8 @@ export function demoDataset(endDate = '2026-09-25', n = 130): Dataset {
 let sharedDemo: Dataset | null = null;
 /** 全站共用的示範資料（避免切換分頁時重算）。 */
 export function demoShared(): Dataset { return sharedDemo ??= demoDataset(); }
+
+/** 「今日主力動向」：主力買賣超（買超前 15 − 賣超前 15）佔當日成交量的比例分級。 */
+export function mainVerdict(share: number): { label: '大買' | '買' | '中性' | '賣' | '大賣'; level: 'buy2' | 'buy' | 'flat' | 'sell' | 'sell2' } {
+  return share >= 0.1 ? { label: '大買', level: 'buy2' } : share >= 0.03 ? { label: '買', level: 'buy' } : share <= -0.1 ? { label: '大賣', level: 'sell2' } : share <= -0.03 ? { label: '賣', level: 'sell' } : { label: '中性', level: 'flat' };
+}
