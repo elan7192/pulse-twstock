@@ -20,6 +20,7 @@ writeFileSync(join(DIST, '.nojekyll'), '');
 // 資料
 const data = join(ROOT, 'data');
 if (existsSync(join(data, 'open'))) cpSync(join(data, 'open'), join(DIST, 'data/open'), { recursive: true });
+if (existsSync(join(data, 'geo'))) cpSync(join(data, 'geo'), join(DIST, 'data/geo'), { recursive: true });
 if (existsSync(join(data, 'plan'))) cpSync(join(data, 'plan'), join(DIST, 'data/plan'), { recursive: true });
 if (existsSync(join(data, 'status.json'))) cpSync(join(data, 'status.json'), join(DIST, 'data/status.json'));
 const series = new Map();

@@ -1,6 +1,9 @@
 'use client';
 import {useEffect,useMemo,useState,type ReactNode} from 'react';
-import {Crosshair,Database,Layers3,Radio,Search,SlidersHorizontal,TriangleAlert,Upload,Users,X} from 'lucide-react';
+import {Crosshair,Database,Globe,Layers3,Radio,Search,SlidersHorizontal,TriangleAlert,Upload,Users,X} from 'lucide-react';
+import {DATA_MODE} from '@/lib/data-mode';
+import {brokerMap,branchCounty,DEMO_HQ,TILE,type County} from '@/lib/geo';
+import {addCodes,addGroup,categories,DEFAULT_WATCH,deleteGroup,hotCombos,moveCode,parseCodes,removeCode,renameGroup,sanitizeWatch,type Watch} from '@/lib/watch';
 import {num} from '@/lib/market';
 import {
   anomalies,backtest,buildDataset,concentrationSeries,dateFromText,decodeBytes,demoShared,flipPressure,heavyBrokers,
@@ -19,7 +22,7 @@ const md=(d:string)=>d.slice(5).replace('-','/');
 
 const getDemo=demoShared;
 type ImportState={files:{name:string;format:string;code:string;date:string;rows:number;warnings:string[]}[];raw:RawDay[];brokers:Broker[];names:Record<string,string>};
-const STORE='pulse-branch-import-v1';
+const STORE='pulse-branch-import-v1',WATCH='pulse-watch-v1';
 type View='stock'|'desk'|'screen'|'import';
 
 function BrokerTags({b,p}:{b?:Broker;p?:BrokerProfile}){
@@ -31,6 +34,10 @@ export default function BranchDesk(){
   const [imported,setImported]=useState<ImportState|null>(null),[useImport,setUseImport]=useState(false);
   const [view,setView]=useState<View>('stock');
   const [code,setCode]=useState('2330'),[date,setDate]=useState<string|null>(null),[range,setRange]=useState(5),[broker,setBroker]=useState<string|null>(null);
+  const [watch,setWatchRaw]=useState<Watch>(DEFAULT_WATCH),[group,setGroup]=useState('all'),[editing,setEditing]=useState(false),[hq,setHq]=useState<Record<string,County>>({});
+  const setWatch=(w:Watch)=>{setWatchRaw(w);try{localStorage.setItem(WATCH,JSON.stringify(w));}catch{/* 無法保存時只保留在本頁 */}};
+  useEffect(()=>{try{const w=sanitizeWatch(JSON.parse(localStorage.getItem(WATCH)??'null'));if(w)setWatchRaw(w);}catch{/* 使用預設自選 */}
+    if(DATA_MODE.kind==='static')fetch(`${DATA_MODE.base}data/geo/hq.json`,{cache:'no-cache'}).then(r=>r.ok?r.json():{}).then(setHq).catch(()=>{});},[]);
   useEffect(()=>{try{const s=localStorage.getItem(STORE);if(s){const v=JSON.parse(s) as ImportState;if(v?.raw?.length)setImported(v);}}catch{/* 無法讀取瀏覽器儲存時以示範資料運作 */}},[]);
   const ds=useMemo(()=>useImport&&imported?.raw.length?buildDataset(imported.raw,imported.brokers,imported.names,'import'):getDemo(),[useImport,imported]);
   const cur=ds.days[code]?code:ds.stocks[0];
@@ -43,15 +50,16 @@ export default function BranchDesk(){
       <span>{ds.source==='synthetic'?`虛構券商、固定亂數：${ds.stocks.length} 檔 × ${ds.dates.length} 個交易日。公式可用，數字不代表真實市場。`:`${ds.stocks.length} 檔、${ds.dates.length} 個交易日（${ds.dates[0]} ~ ${ds.dates.at(-1)}）。無開收盤價時以分點成交均價代替。`}</span>
       <small>{ds.source==='synthetic'?<button className="text-button" onClick={()=>setView('import')}>匯入真實買賣日報表 →</button>:<button className="text-button" onClick={()=>setUseImport(false)}>切回示範資料</button>}</small></div>
     {!ds.stocks.length?<div className="panel empty-state bd-margin">目前沒有可用資料。</div>:
-     view==='stock'?<StockView ds={ds} code={cur} setCode={c=>{setCode(c);}} date={date} setDate={setDate} range={range} setRange={setRange} broker={broker} setBroker={setBroker}/>:
+     view==='stock'?<StockView ds={ds} code={cur} setCode={c=>{setCode(c);}} date={date} setDate={setDate} range={range} setRange={setRange} broker={broker} setBroker={setBroker} watch={watch} setWatch={setWatch} group={group} setGroup={setGroup} onEdit={()=>setEditing(true)} hq={ds.source==='synthetic'?DEMO_HQ:{...DEMO_HQ,...hq}}/>:
      view==='desk'?<DeskView ds={ds} onOpen={open}/>:
      view==='screen'?<ScreenView ds={ds} onOpen={open}/>:
      <ImportView imported={imported} useImport={useImport} onChange={v=>{setImported(v);if(!v)setUseImport(false);}} onUse={()=>{setUseImport(true);setDate(null);setBroker(null);setView('stock');}} onDemo={()=>setUseImport(false)}/>}
+    {editing&&<WatchEditor ds={ds} watch={watch} setWatch={setWatch} initial={group==='all'?watch.groups[0].id:group} onClose={()=>setEditing(false)}/>}
   </section>;
 }
 
 // ================= 個股分點 =================
-function StockView({ds,code,setCode,date,setDate,range,setRange,broker,setBroker}:{ds:Dataset;code:string;setCode:(c:string)=>void;date:string|null;setDate:(d:string|null)=>void;range:number;setRange:(n:number)=>void;broker:string|null;setBroker:(b:string|null)=>void}){
+function StockView({ds,code,setCode,date,setDate,range,setRange,broker,setBroker,watch,setWatch,group,setGroup,onEdit,hq}:{ds:Dataset;code:string;setCode:(c:string)=>void;date:string|null;setDate:(d:string|null)=>void;range:number;setRange:(n:number)=>void;broker:string|null;setBroker:(b:string|null)=>void;watch:Watch;setWatch:(w:Watch)=>void;group:string;setGroup:(g:string)=>void;onEdit:()=>void;hq:Record<string,County>}){
   const [query,setQuery]=useState('');
   const days=ds.days[code];
   const found=date?days.findIndex(d=>d.date===date):-1;const idx=found<0?days.length-1:found;
@@ -64,14 +72,22 @@ function StockView({ds,code,setCode,date,setDate,range,setRange,broker,setBroker
   const levels=useMemo(()=>priceLevels(rdays,rs.topBuy,rs.topSell),[rs]);// eslint-disable-line react-hooks/exhaustive-deps
   const flip=flipPressure(day,profiles);const flipOut=day.topSell.filter(f=>profiles.get(f.broker)?.style==='flip').reduce((s,f)=>s-f.net,0);const heavy=heavyBrokers(day).slice(0,6);
   const change=prev?day.mark-prev.mark:null;const hasClose=day.close!=null;
-  const list=ds.stocks.filter(c=>!query||c.includes(query)||(ds.names[c]??'').includes(query));
+  const g=watch.groups.find(x=>x.id===group);const base=g?g.codes:ds.stocks;
+  const list=base.filter(c=>!query||c.includes(query.toUpperCase())||(ds.names[c]??'').includes(query));
+  const target=g??watch.groups[0];const inTarget=(c:string)=>target.codes.includes(c);
+  const toggle=(c:string)=>setWatch(inTarget(c)?removeCode(watch,target.id,c):addCodes(watch,target.id,[c]).watch);
   const pick=(b:string)=>setBroker(broker===b?null:b);
   return <div className="work-grid bd-grid">
-    <aside className="panel watchlist"><div className="panel-title"><h2><Layers3 size={16}/>個股</h2><span className="tag">{ds.stocks.length} 檔</span></div>
+    <aside className="panel watchlist"><div className="panel-title"><h2><Layers3 size={16}/>自選股</h2><span className="tag">{watch.groups.length} 個群組</span></div>
+      <div className="bd-groups" role="tablist" aria-label="自選股群組"><button role="tab" aria-selected={group==='all'} className={group==='all'?'active':''} onClick={()=>setGroup('all')}>全部 <small>{ds.stocks.length}</small></button>
+        {watch.groups.map(x=><button key={x.id} role="tab" aria-selected={group===x.id} className={group===x.id?'active':''} onClick={()=>setGroup(x.id)}>{x.name} <small>{x.codes.length}</small></button>)}<button className="bd-edit" onClick={onEdit}>✎ 編輯</button></div>
       <label className="bd-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value.trim())} placeholder="代號或名稱" aria-label="搜尋個股"/></label>
-      <div className="stock-list bd-stock-list">{list.map(c=>{const ds0=ds.days[c],d=ds0.at(-1)!,p=ds0.at(-2);const ch=p?d.mark/p.mark-1:null;return <button key={c} className={`stock-item ${c===code?'selected':''}`} onClick={()=>setCode(c)} aria-pressed={c===code}>
+      <div className="stock-list bd-stock-list">{list.map(c=>{const ds0=ds.days[c];if(!ds0)return <div key={c} className="bd-watch-row"><span className="stock-item bd-nodata"><span><b>{c}</b><small>此資料集沒有這檔</small></span></span><button className="bd-plus on" onClick={()=>toggle(c)} aria-label={`從 ${target.name} 移除 ${c}`} title={`從「${target.name}」移除`}>−</button></div>;
+        const d=ds0.at(-1)!,p=ds0.at(-2);const ch=p?d.mark/p.mark-1:null;const on=inTarget(c);return <div key={c} className="bd-watch-row"><button className={`stock-item ${c===code?'selected':''}`} onClick={()=>setCode(c)} aria-pressed={c===code}>
         <span><b>{ds.names[c]||c}</b><small>{c}<em className={`bd-main ${tone(d.mainNet)}`}>主力 {fl(d.mainNet,true)}</em></small></span>
-        <span className={tone(ch)}><b>{px(d.mark)}</b><small>{pct(ch,2)}</small></span></button>;})}</div>
+        <span className={tone(ch)}><b>{px(d.mark)}</b><small>{pct(ch,2)}</small></span></button>
+        <button className={`bd-plus ${on?'on':''}`} onClick={()=>toggle(c)} aria-label={`${on?'從':'加入'} ${target.name} ${on?'移除':''} ${c}`} title={on?`已在「${target.name}」，點擊移除`:`加入「${target.name}」`}>{on?'★':'+'}</button></div>;})}
+        {!list.length&&<p className="live-helper">{g?'這個群組還沒有股票，點「編輯」或在「全部」按 + 加入。':'沒有符合的個股。'}</p>}</div>
       <div className="legend"><span className="up">■ 買超</span><span className="down">■ 賣超</span><span className="muted">單位：張</span></div></aside>
 
     <section className="center-column">
@@ -86,9 +102,10 @@ function StockView({ds,code,setCode,date,setDate,range,setRange,broker,setBroker
         <div className="chart-bottom"><span><i className="dot amber"/>點選 K 棒切換統計日</span><span>區間 {md(rs.from)} – {md(rs.to)}（{rdays.length} 日）</span><span className="bd-row"><button className="text-button" disabled={idx<=0} onClick={()=>setDate(days[idx-1].date)}>◀ 前一日</button><button className="text-button" disabled={idx>=days.length-1} onClick={()=>setDate(days[idx+1].date)}>後一日 ▶</button></span></div></div>
 
       <div className="bottom-grid">
-        <TopTable title="買超 TOP15" side="buy" flows={rs.topBuy} volume={rs.volume} ds={ds} profiles={profiles} selected={broker} onPick={pick}/>
-        <TopTable title="賣超 TOP15" side="sell" flows={rs.topSell} volume={rs.volume} ds={ds} profiles={profiles} selected={broker} onPick={pick}/>
+        <TopTable title="買超 TOP15" side="buy" flows={rs.topBuy} volume={rs.volume} ds={ds} profiles={profiles} selected={broker} onPick={pick} hq={hq[code]??null}/>
+        <TopTable title="賣超 TOP15" side="sell" flows={rs.topSell} volume={rs.volume} ds={ds} profiles={profiles} selected={broker} onPick={pick} hq={hq[code]??null}/>
       </div>
+      <BrokerMapPanel ds={ds} code={code} flows={rs.flows} volume={rs.volume} hq={hq[code]??null} label={range===1?'當日':`近 ${range} 日`} selected={broker} onPick={pick}/>
       {broker&&<BrokerDetail ds={ds} code={code} days={days} idx={idx} broker={broker} profile={profiles.get(broker)} onClose={()=>setBroker(null)}/>}
     </section>
 
@@ -120,12 +137,12 @@ function StockView({ds,code,setCode,date,setDate,range,setRange,broker,setBroker
   </div>;
 }
 
-function TopTable({title,side,flows,volume,ds,profiles,selected,onPick}:{title:string;side:'buy'|'sell';flows:Flow[];volume:number;ds:Dataset;profiles:Map<string,BrokerProfile>;selected:string|null;onPick:(b:string)=>void}){
+function TopTable({title,side,flows,volume,ds,profiles,selected,onPick,hq}:{title:string;side:'buy'|'sell';flows:Flow[];volume:number;ds:Dataset;profiles:Map<string,BrokerProfile>;selected:string|null;onPick:(b:string)=>void;hq?:County|null}){
   return <div className="panel"><div className="panel-title"><h2 className={side==='buy'?'up':'down'}>{title}</h2><span className="muted small">點選分點看明細</span></div>
     <div className="bd-table-wrap"><table className="bd-table"><thead><tr><th>#</th><th>券商分點</th><th>買進</th><th>賣出</th><th>{side==='buy'?'買超':'賣超'}</th><th>均價</th><th>佔量</th></tr></thead>
       <tbody>{flows.map((f,i)=>{const b=ds.brokers.get(f.broker);const avg=side==='buy'?(f.buy?f.buyAmt/f.buy:null):(f.sell?f.sellAmt/f.sell:null);
         return <tr key={f.broker} className={selected===f.broker?'selected':''} onClick={()=>onPick(f.broker)} tabIndex={0} onKeyDown={e=>{if(e.key==='Enter')onPick(f.broker);}}>
-          <td className="muted">{i+1}</td><td className="bd-name">{b?.name??f.broker}<BrokerTags b={b} p={profiles.get(f.broker)}/></td><td>{fl(f.buy)}</td><td>{fl(f.sell)}</td>
+          <td className="muted">{i+1}</td><td className="bd-name">{b?.name??f.broker}<BrokerTags b={b} p={profiles.get(f.broker)}/>{hq&&b&&b.kind!=='foreign'&&branchCounty(b.name)===hq&&<i className="bd-badge local" title={`分點與公司總部同在${hq}`}>地緣</i>}</td><td>{fl(f.buy)}</td><td>{fl(f.sell)}</td>
           <td className={side==='buy'?'up':'down'}>{fl(Math.abs(f.net))}</td><td>{px(avg)}</td><td className="muted">{volume?(Math.abs(f.net)/volume*100).toFixed(1):'—'}%</td></tr>;})}
         {!flows.length&&<tr><td colSpan={7} className="muted">無資料</td></tr>}</tbody></table></div></div>;
 }
@@ -209,6 +226,66 @@ function BrokerDetail({ds,code,days,idx,broker,profile,onClose}:{ds:Dataset;code
     <p className="live-helper">平均成本法：同日買賣先互抵，剩餘淨額進出庫存；以區間起點零庫存估算，不代表該分點實際持股，也不能辨識背後是哪一位投資人。</p></div>;
 }
 
+// ================= 主力地圖 =================
+function BrokerMapPanel({ds,code,flows,volume,hq,label,selected,onPick}:{ds:Dataset;code:string;flows:Flow[];volume:number;hq:County|null;label:string;selected:string|null;onPick:(b:string)=>void}){
+  const m=useMemo(()=>brokerMap(ds,flows,hq),[ds,flows,hq]);
+  const by=new Map(m.counties.map(c=>[c.county,c]));const max=Math.max(1,...m.counties.map(c=>Math.abs(c.net)));
+  const CW=66,CH=36,G=4,W=4*(CW+G),H=11*(CH+G);
+  return <div className="panel"><div className="panel-title"><h2><Globe size={16}/>主力地圖 <span className="muted small">/ 分點所在縣市・{label}</span></h2><span className="tag">{hq?`公司總部 ${hq}`:'總部縣市不明'}</span></div>
+    <div className="bd-map">
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${ds.names[code]??code} 各縣市分點買賣超`} className="bd-map-svg">
+        {(Object.entries(TILE) as [County,[number,number]][]).map(([c,[x,y]])=>{const f=by.get(c);const a=f?0.18+0.72*Math.abs(f.net)/max:0;const isHq=c===hq;
+          return <g key={c} transform={`translate(${x*(CW+G)},${y*(CH+G)})`}><title>{`${c}${isHq?'（公司總部）':''}：${f?`淨 ${fl(f.net,true)} 張・${f.brokers} 個分點`:'無進出'}`}</title>
+            <rect width={CW} height={CH} rx="4" fill={f?(f.net>=0?`rgba(243,109,122,${a})`:`rgba(50,203,165,${a})`):'#141d27'} stroke={isHq?'#f1c57e':'#26313e'} strokeWidth={isHq?2:1}/>
+            <text x={CW/2} y={14} textAnchor="middle" fontSize="11" fill={f?'#f1f5f9':'#6f8193'}>{isHq?'★':''}{c.replace(/[市縣]$/,'')}</text>
+            {f&&<text x={CW/2} y={28} textAnchor="middle" fontSize="10" fill="#e3ebf3">{fl(f.net,true)}</text>}</g>;})}
+      </svg>
+      <div className="bd-map-side">
+        <div className="bd-stats two"><div><span>地緣券商淨買賣</span><b className={tone(m.localNet)}>{hq?`${fl(m.localNet,true)} 張`:'—'}</b></div><div><span>地緣佔成交量</span><b>{hq&&volume?pct(m.local.reduce((s,f)=>s+Math.abs(f.net),0)/volume):'—'}</b></div></div>
+        <h3 className="bd-sub">地緣券商（與總部同縣市）</h3>
+        <div className="bd-mini-list bd-pad">{m.local.slice(0,8).map(f=><button key={f.broker} className={selected===f.broker?'active':''} onClick={()=>onPick(f.broker)}><span>{ds.brokers.get(f.broker)?.name??f.broker}</span><b className={tone(f.net)}>{fl(f.net,true)} 張</b></button>)}
+          {!m.local.length&&<p className="live-helper">{hq?'區間內沒有同縣市分點進出。':'沒有這檔公司的總部資料。'}</p>}</div>
+        <h3 className="bd-sub">縣市淨買賣排行</h3>
+        <div className="bd-mini-list bd-pad">{m.counties.slice(0,6).map(c=><div key={c.county} className="bd-map-row"><span>{c.county===hq?'★ ':''}{c.county} <small className="muted">{c.brokers} 家</small></span><b className={tone(c.net)}>{fl(c.net,true)} 張</b></div>)}</div>
+      </div></div>
+    <p className="live-helper">分點縣市依名稱後的據點名判斷（例：「元大-竹北」＝新竹縣）；外資與判斷不出據點的分點不上圖（{fl(m.unknown)} 張）。公司總部縣市取自證交所、櫃買公司基本資料地址。地緣券商常是公司派、員工或在地大戶，連續買超值得留意，但不等於內線。</p></div>;
+}
+
+// ================= 編輯自選股 =================
+function WatchEditor({ds,watch,setWatch,initial,onClose}:{ds:Dataset;watch:Watch;setWatch:(w:Watch)=>void;initial:string;onClose:()=>void}){
+  const cats=useMemo(()=>categories(ds),[ds]);
+  const [cat,setCat]=useState('all'),[gid,setGid]=useState(initial),[input,setInput]=useState(''),[name,setName]=useState(''),[msg,setMsg]=useState('');
+  const g=watch.groups.find(x=>x.id===gid)??watch.groups[0];
+  const src=cat.startsWith('g:')?watch.groups.find(x=>`g:${x.id}`===cat)?.codes??[]:cats.find(c=>c.key===cat)?.codes??[];
+  const nm=(c:string)=>ds.names[c]??'';
+  const add=(codes:string[])=>{if(!codes.length){setMsg('沒有可加入的代號');return;}const r=addCodes(watch,g.id,codes);setWatch(r.watch);setMsg(`加入「${g.name}」${r.added} 檔${codes.length-r.added?`，${codes.length-r.added} 檔已存在`:''}${codes.some(c=>!ds.days[c])?'；部分代號目前資料集沒有資料':''}`);};
+  const paste=async()=>{try{add(parseCodes(await navigator.clipboard.readText()));}catch{setMsg('瀏覽器不允許讀取剪貼簿：請點輸入框後按 Ctrl+V');}};
+  useEffect(()=>{const k=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose();};window.addEventListener('keydown',k);return()=>window.removeEventListener('keydown',k);},[onClose]);
+  return <div className="bd-modal-bg" onClick={onClose}><div className="bd-modal panel" role="dialog" aria-modal="true" aria-label="編輯自選股" onClick={e=>e.stopPropagation()}>
+    <div className="panel-title"><h2><Layers3 size={16}/>編輯自選股</h2><button className="text-button" onClick={onClose} aria-label="關閉"><X size={16}/>完成</button></div>
+    <div className="bd-modal-body">
+      <nav className="bd-modal-cats" aria-label="分類"><h3 className="bd-sub">分類</h3>{cats.map(c=><button key={c.key} className={cat===c.key?'active':''} onClick={()=>setCat(c.key)}>{c.label}<small>{c.codes.length}</small></button>)}
+        <h3 className="bd-sub">我的群組</h3>{watch.groups.filter(x=>x.id!==g.id).map(x=><button key={x.id} className={cat===`g:${x.id}`?'active':''} onClick={()=>setCat(`g:${x.id}`)}>{x.name}<small>{x.codes.length}</small></button>)}</nav>
+      <div className="bd-modal-src"><div className="bd-row bd-modal-head"><b>{cat.startsWith('g:')?watch.groups.find(x=>`g:${x.id}`===cat)?.name:cats.find(c=>c.key===cat)?.label}</b><button className="button" disabled={!src.length} onClick={()=>add(src)}>全部加入（{src.length}）</button></div>
+        <div className="bd-modal-list">{src.map(c=>{const has=g.codes.includes(c);return <div key={c} className="bd-modal-item"><span><b>{c}</b> {nm(c)}</span><button className={`bd-plus ${has?'on':''}`} disabled={has} onClick={()=>add([c])} aria-label={`加入 ${c}`}>{has?'✓':'+'}</button></div>;})}
+          {!src.length&&<p className="live-helper">這個分類目前沒有股票。</p>}</div></div>
+      <div className="bd-modal-target">
+        <div className="bd-groups">{watch.groups.map(x=><button key={x.id} className={x.id===g.id?'active':''} onClick={()=>setGid(x.id)}>{x.name} <small>{x.codes.length}</small></button>)}</div>
+        <div className="bd-row"><input value={name} onChange={e=>setName(e.target.value)} placeholder="群組名稱" aria-label="群組名稱" maxLength={20}/>
+          <button className="button" onClick={()=>{const r=addGroup(watch,name);setWatch(r.watch);setGid(r.id);setName('');}}>新增群組</button>
+          <button className="button" disabled={!name.trim()} onClick={()=>{setWatch(renameGroup(watch,g.id,name));setName('');}}>重新命名</button>
+          <button className="text-button" disabled={watch.groups.length<=1} onClick={()=>{if(confirm(`刪除群組「${g.name}」？`)){const w=deleteGroup(watch,g.id);setWatch(w);setGid(w.groups[0].id);}}}>刪除群組</button></div>
+        <div className="bd-row"><input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'){add(parseCodes(input));setInput('');}}}
+          onPaste={e=>{const c=parseCodes(e.clipboardData.getData('text'));if(c.length>1){e.preventDefault();add(c);}}} placeholder="輸入代號，可一次貼上多檔（空白、逗號、換行分隔）" aria-label="輸入股票代號"/>
+          <button className="button primary" onClick={()=>{add(parseCodes(input));setInput('');}}>加入</button><button className="button" onClick={paste}>從剪貼簿貼上</button></div>
+        {msg&&<p className="tiny">{msg}</p>}
+        <div className="bd-modal-list">{g.codes.map((c,i)=><div key={c} className="bd-modal-item"><span><small className="muted">{i+1}</small> <b>{c}</b> {nm(c)}{!ds.days[c]&&<small className="muted">（無資料）</small>}</span>
+          <span className="bd-row"><button className="text-button" disabled={!i} onClick={()=>setWatch(moveCode(watch,g.id,c,-1))} aria-label={`上移 ${c}`}>↑</button><button className="text-button" disabled={i===g.codes.length-1} onClick={()=>setWatch(moveCode(watch,g.id,c,1))} aria-label={`下移 ${c}`}>↓</button><button className="text-button" onClick={()=>setWatch(removeCode(watch,g.id,c))} aria-label={`移除 ${c}`}><X size={13}/></button></span></div>)}
+          {!g.codes.length&&<p className="live-helper">群組是空的：從左側分類加入，或輸入／貼上代號。</p>}</div>
+      </div></div>
+    <p className="live-helper">自選股只存在這個瀏覽器（localStorage）。Esc 或點背景關閉。</p></div></div>;
+}
+
 // ================= 分點調查局 =================
 type Rank='pnl'|'flip'|'swing'|'win'|'active'|'loser';
 function DeskView({ds,onOpen}:{ds:Dataset;onOpen:(code:string,broker:string)=>void}){
@@ -224,6 +301,7 @@ function DeskView({ds,onOpen}:{ds:Dataset;onOpen:(code:string,broker:string)=>vo
   if(rank==='loser')list=[...list].sort((a,b)=>a.pnl-b.pnl);
   list=list.slice(0,30);
   const cur=pmap.get(sel??'')??list[0];
+  const hot=useMemo(()=>hotCombos(ds,ds.dates.at(-1)!),[ds]);
   const ranks:[Rank,string][]=[['pnl','贏家券商'],['loser','輸家券商'],['flip','隔日沖報酬王'],['swing','波段報酬王'],['win','常勝軍'],['active','交易狂']];
   return <div className="bd-desk">
     <div className="panel bd-alerts"><div className="panel-title"><h2><Radio size={16}/>異常進駐分點 <span className="muted small">近 10 個交易日</span></h2><span className="tag">對應「神秘券商」概念</span></div>
@@ -232,6 +310,11 @@ function DeskView({ds,onOpen}:{ds:Dataset;onOpen:(code:string,broker:string)=>vo
         <span><em className="up">買超 {fl(a.net)} 張</em> · 佔量 {(a.share*100).toFixed(1)}%</span><small>{a.multiple?`過去 20 日均量 ${a.multiple.toFixed(1)} 倍`:'過去 20 日未交易'}・{a.priorActive} 天有交易</small></button>)}</div>
       :<p className="live-helper">近 10 日沒有符合條件的異常進駐。</p>}
       <p className="live-helper">條件：當日買超前 5 名、買超 ≥ 當日量 1%、過去 20 日有交易 ≤ 5 天，且買超 ≥ 過去平均 3 倍。</p></div>
+    <div className="panel"><div className="panel-title"><h2><Radio size={16}/>熱門券商組合 <span className="muted small">{md(ds.dates.at(-1)!)}・分點 × 個股</span></h2><span className="tag">依淨買賣金額</span></div>
+      <div className="bottom-grid bd-hot">{(['buy','sell'] as const).map(side=><div key={side} className="bd-table-wrap"><table className="bd-table"><thead><tr><th className={side==='buy'?'up':'down'}>{side==='buy'?'買超組合':'賣超組合'}</th><th>券商分點</th><th>{side==='buy'?'買超':'賣超'}</th><th>金額</th><th>佔量</th></tr></thead>
+        <tbody>{hot[side].map(h=><tr key={h.code+h.broker} onClick={()=>onOpen(h.code,h.broker)} tabIndex={0} onKeyDown={e=>{if(e.key==='Enter')onOpen(h.code,h.broker);}}><td className="bd-name">{h.code} {ds.names[h.code]??''}</td><td className="bd-name">{ds.brokers.get(h.broker)?.name??h.broker}<BrokerTags b={ds.brokers.get(h.broker)} p={pmap.get(h.broker)}/></td>
+          <td className={tone(h.net)}>{fl(Math.abs(h.net))} 張</td><td>{amt(Math.abs(h.amount))}</td><td className={h.share>=0.05?'amber-text':'muted'}>{(h.share*100).toFixed(1)}%</td></tr>)}</tbody></table></div>)}</div>
+      <p className="live-helper">當日所有個股的買超／賣超前 15 分點，依「淨張數 × 當日均價」排行，每檔最多 3 組；點選直接開啟該股並疊加分點。對應籌碼K線的「即時熱門券商」，但這裡是盤後資料。</p></div>
     <div className="bd-desk-grid">
       <div className="panel"><div className="panel-title"><h2><Users size={16}/>券商分點排行</h2>
         <div className="bd-row"><div className="bd-seg">{[20,60,120].map(n=><button key={n} className={win===n?'active':''} onClick={()=>setWin(n)}>{n}日</button>)}</div>

@@ -7,6 +7,7 @@ import { SOURCES, HOSTS, taipeiDate } from '../src/lib/open-sources.ts';
 import { parseMiIndex, num } from './mi-index.mjs';
 import { parseTxo, packChain, breadthSeries } from '../src/lib/plan.ts';
 import { parseFuturesReport } from '../src/lib/futures.ts';
+import { addressCounty } from '../src/lib/geo.ts';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 const DATA = join(ROOT, 'data');
@@ -134,10 +135,26 @@ async function planData(today) {
   }
 }
 
+/** 公司總部縣市（主力地圖的地緣券商用）：證交所、櫃買公司基本資料的地址。失敗時保留舊檔。 */
+async function companyGeo() {
+  const file = join(DATA, 'geo', 'hq.json'); const out = { ...(load(file) ?? {}) }; let n = 0;
+  for (const [host, url, codeKey, addrKey] of [
+    ['openapi.twse.com.tw', 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L', '公司代號', '住址'],
+    ['www.tpex.org.tw', 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O', 'SecuritiesCompanyCode', 'Address'],
+  ]) {
+    const r = await request(host, url, { headers: { Accept: 'application/json' } });
+    if (r.status !== 200) { note(`✗ 公司地址 ${host}：${r.status || r.error}`); continue; }
+    let arr; try { arr = JSON.parse(r.buf.toString('utf8').replace(/^\uFEFF/, '')); } catch { note(`✗ 公司地址 ${host}：不是 JSON`); continue; }
+    for (const o of Array.isArray(arr) ? arr : []) { const code = String(o[codeKey] ?? o['公司代號'] ?? '').trim(); const c = addressCounty(String(o[addrKey] ?? o['住址'] ?? o['Address'] ?? '')); if (/^[0-9A-Z]{4,6}$/.test(code) && c) { out[code] = c; n++; } }
+  }
+  if (n) { save(file, out); note(`✓ 公司總部縣市 ${n} 家（累計 ${Object.keys(out).length}）`); }
+}
+
 async function main() {
   const today = taipeiDate(Date.now());
   note(`PULSE 資料更新 ${new Date().toISOString()}（台北 ${today}）`);
   if (process.argv.includes('--only=plan')) { await planData(today); return; }
+  if (process.argv.includes('--only=geo')) { await companyGeo(); return; }
   // 1. 當日資料集
   const plain = ['twse_punish', 'twse_notice', 'twse_notetrans', 'twse_margin', 'twse_day', 'twse_meeting', 'taifex_ssf_margin', 'taifex_fut_daily', 'tpex_disposal', 'tpex_warning', 'tpex_margin', 'tpex_day', 'tpex_cb_put', 'tpex_cb_mode'];
   for (const k of plain) await fetchSource(k, {}, join(DATA, 'open', `${k}.json`));
@@ -183,7 +200,9 @@ async function main() {
       if (rows.length) save(join(DATA, 'tpex-daily', `${d}.json`), rows);
     } catch { note('✗ 上櫃日行情無法累積'); }
   }
-  // 5. 交易計劃資料
+  // 5. 公司總部縣市（主力地圖）
+  try { await companyGeo(); } catch (e) { note(`✗ 公司總部縣市：${e}`); }
+  // 6. 交易計劃資料
   try { await planData(today); } catch (e) { note(`✗ 交易計劃資料：${e}`); }
   save(join(DATA, 'status.json'), { updatedAt: Date.now(), taipei: today, log, blocked: [...blocked], requests: Object.fromEntries(count) });
 }
