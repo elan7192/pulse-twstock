@@ -1,1 +1,1 @@
-{"key":"twse_notetrans","label":"上市注意累計次數異常","status":200,"fetchedAt":1791983037543,"payload":"[\n{\"Code\":\"053040\",\"Name\":\"可寧衛富邦5C購01\",\"RecentlyMetAttentionSecuritiesCriteria\":\"115年10月12日至115年10月13日連續二次\"}]\n","encoding":"text","stale":false,"retryAfter":0,"message":"已更新"}
+{"key":"twse_notetrans","label":"上市注意累計次數異常","status":200,"fetchedAt":1792001292165,"payload":"[\n{\"Code\":\"053040\",\"Name\":\"可寧衛富邦5C購01\",\"RecentlyMetAttentionSecuritiesCriteria\":\"115年10月12日至115年10月13日連續二次\"}]\n","encoding":"text","stale":false,"retryAfter":0,"message":"已更新"}
