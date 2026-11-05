@@ -1,1 +1,1 @@
-{"key":"twse_notetrans","label":"上市注意累計次數異常","status":200,"fetchedAt":1793893610074,"payload":"[\n{\"Code\":\"066098\",\"Name\":\"南亞科凱基5B購04\",\"RecentlyMetAttentionSecuritiesCriteria\":\"115年11月3日至115年11月4日連續二次\"}]\n","encoding":"text","stale":false,"retryAfter":0,"message":"已更新"}
+{"key":"twse_notetrans","label":"上市注意累計次數異常","status":200,"fetchedAt":1793911598406,"payload":"[\n{\"Code\":\"066098\",\"Name\":\"南亞科凱基5B購04\",\"RecentlyMetAttentionSecuritiesCriteria\":\"115年11月3日至115年11月4日連續二次\"}]\n","encoding":"text","stale":false,"retryAfter":0,"message":"已更新"}
