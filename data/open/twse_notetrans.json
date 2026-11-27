@@ -1,1 +1,1 @@
-{"key":"twse_notetrans","label":"上市注意累計次數異常","status":200,"fetchedAt":1795732243742,"payload":"[\n{\"Code\":\"\",\"Name\":\"\",\"RecentlyMetAttentionSecuritiesCriteria\":\"\"}]\n","encoding":"text","stale":false,"retryAfter":0,"message":"已更新"}
+{"key":"twse_notetrans","label":"上市注意累計次數異常","status":200,"fetchedAt":1795801101174,"payload":"[\n{\"Code\":\"\",\"Name\":\"\",\"RecentlyMetAttentionSecuritiesCriteria\":\"\"}]\n","encoding":"text","stale":false,"retryAfter":0,"message":"已更新"}
